@@ -35,7 +35,9 @@ def _sdpa_flash_ctx():
     if SDPBackend is None or not hasattr(nn, "attention"):
         yield
         return
-    with nn.attention.sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+    with nn.attention.sdpa_kernel(
+        [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
+    ):
         yield
 
 

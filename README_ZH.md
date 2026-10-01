@@ -66,11 +66,17 @@ conda activate abot-recon
 pip install torch==2.5.1 torchvision==0.20.1 \
   --index-url https://download.pytorch.org/whl/cu121
 pip install -e .
+
+视频解码为可选功能。如需使用 `demo.py --video`，请额外安装 OpenCV：
+
+```bash
+pip install -e ".[video]"
 ```
 
 ### 推荐加速组件
 
 若环境中安装了 FlashInfer，ABot-Recon 将使用其分页 KV-cache 算子；否则自动回退至 PyTorch SDPA。编译 cuRoPE 可进一步加速旋转位置编码。
+Windows 下如遇 VS 2022 / MSVC / CUDA 12.1 版本冲突，请参见 [Windows cuRoPE2D 编译指南](docs/curope-windows-build-zh.md)。
 
 ```bash
 pip install flashinfer-python
@@ -94,9 +100,21 @@ checkpoints/abot_recon.safetensors
 
 基础模型不依赖回环相关软件包或权重。输入图像按字典序排序，因此建议使用补零后的帧文件名，例如 `000001.jpg`、`000002.jpg`。
 
+已有图像序列可使用 `--image-dir`：
+
 ```bash
 python demo.py \
   --image-dir examples/images \
+  --output-dir outputs/demo \
+  --attention-backend auto \
+  --no-loop-closure
+```
+
+直接输入视频时使用 `--video`。下方命令会将视频解码为临时 RGB 帧，`--start`、`--end` 和 `--stride` 会作用于视频帧索引；输出保存完成后临时帧会自动删除：
+
+```bash
+python demo.py \
+  --video examples/video.mp4 \
   --output-dir outputs/demo \
   --attention-backend auto \
   --no-loop-closure
@@ -114,6 +132,7 @@ python demo.py \
 | `--confidence-threshold T` | 屏蔽置信度低于 `[0, 1]` 区间内阈值 `T` 的点 |
 | `--loop-closure` / `--no-loop-closure` | 开启或关闭可选回环优化；默认开启 |
 | `--start`、`--end`、`--stride` | 从排序后的输入流中选择帧 |
+| `--video FILE` | 直接从视频文件重建；需要 `video` 可选依赖 |
 | `--dense-stride N` | 估计每个选中帧的位姿，但每隔 `N` 帧保存一次稠密输出 |
 | `--max-frames N` | 设置支持的最大序列长度，默认为 `22000` |
 
@@ -223,6 +242,14 @@ git switch eval
 该分支包含数据集准备、第三方权重、评测命令和指标汇总说明。为遵循论文协议，稠密重建评测不使用回环。
 
 ## 测试
+
+安装开发依赖和回环测试所需的可选依赖：
+
+```bash
+pip install -e ".[dev,loop]"
+```
+
+运行测试：
 
 ```bash
 pytest -q

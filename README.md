@@ -66,11 +66,17 @@ conda activate abot-recon
 pip install torch==2.5.1 torchvision==0.20.1 \
   --index-url https://download.pytorch.org/whl/cu121
 pip install -e .
+
+Video decoding is optional. To use `demo.py --video`, also install OpenCV:
+
+```bash
+pip install -e ".[video]"
 ```
 
 ### Recommended acceleration
 
 ABot-Recon uses paged KV-cache operators from FlashInfer when they are available and falls back to PyTorch SDPA otherwise. Compiling cuRoPE further accelerates rotary position encoding.
+For the Windows-specific MSVC/CUDA 12.1 compatibility matrix and cuRoPE2D build steps, see the [Windows cuRoPE2D build guide](docs/curope-windows-build-zh.md).
 
 ```bash
 pip install flashinfer-python
@@ -94,9 +100,21 @@ checkpoints/abot_recon.safetensors
 
 The base model requires neither loop-closure dependencies nor loop assets. Input images are sorted lexicographically, so frame names should be zero-padded (for example, `000001.jpg`, `000002.jpg`, ...).
 
+For an existing image sequence, use `--image-dir`:
+
 ```bash
 python demo.py \
   --image-dir examples/images \
+  --output-dir outputs/demo \
+  --attention-backend auto \
+  --no-loop-closure
+```
+
+For direct video input, use `--video`. The command below decodes the video into temporary RGB frames, applies `--start`, `--end`, and `--stride` to frame indices, and removes those temporary frames after saving outputs:
+
+```bash
+python demo.py \
+  --video examples/video.mp4 \
   --output-dir outputs/demo \
   --attention-backend auto \
   --no-loop-closure
@@ -114,6 +132,7 @@ Useful output controls:
 | `--confidence-threshold T` | Mask points below confidence `T` in `[0, 1]` |
 | `--loop-closure` / `--no-loop-closure` | Enable or disable optional loop-closure refinement; enabled by default |
 | `--start`, `--end`, `--stride` | Select frames from the ordered input stream |
+| `--video FILE` | Reconstruct directly from a video file; requires the `video` extra |
 | `--dense-stride N` | Estimate every selected-frame pose but save dense outputs every `N` frames |
 | `--max-frames N` | Set the maximum supported stream length; default: `22000` |
 
@@ -224,6 +243,14 @@ git switch eval
 That branch documents dataset preparation, third-party checkpoints, benchmark commands, and metric aggregation. Dense reconstruction is evaluated without loop closure to match the paper protocol.
 
 ## Tests
+
+Install the development and optional loop-closure test dependencies:
+
+```bash
+pip install -e ".[dev,loop]"
+```
+
+Run the test suite:
 
 ```bash
 pytest -q

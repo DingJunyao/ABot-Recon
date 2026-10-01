@@ -23,6 +23,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+video = ["opencv-python>=4.8"]
 loop = ["faiss-cpu>=1.8", "opencv-python>=4.8", "pypose>=0.6", "scipy>=1.10"]
 dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6"]
 

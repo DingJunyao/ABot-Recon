@@ -1304,15 +1304,22 @@ class ABotReconNetwork(Pi3):
         collect_camera_state = allowed is None or "camera_state" in allowed
         camera_only = allowed is not None and allowed.issubset({"camera_poses", "camera_state"})
 
+        def offload_dense_output(key: str, value: Any) -> Any:
+            # Dense maps dominate long-video output memory. Keep them on CPU so the
+            # final concatenation does not duplicate the full sequence on CUDA.
+            if key in dense_keys and torch.is_tensor(value):
+                return value.detach().to(device="cpu")
+            return value
+
         def keep_pred(
             pred: Dict[str, Any], *, skip_state: Tuple[str, ...], frame_index: int
         ) -> Dict[str, Any]:
             return {
-                k: v
-                for k, v in pred.items()
-                if k not in skip_state
-                and (allowed is None or k in allowed)
-                and (dense_indices is None or k not in dense_keys or frame_index in dense_indices)
+                key: offload_dense_output(key, value)
+                for key, value in pred.items()
+                if key not in skip_state
+                and (allowed is None or key in allowed)
+                and (dense_indices is None or key not in dense_keys or frame_index in dense_indices)
             }
 
         def stack_preds(preds: List[Dict[str, Any]]) -> Dict[str, Any]:

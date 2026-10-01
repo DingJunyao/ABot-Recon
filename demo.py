@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -13,14 +14,24 @@ from PIL import Image
 from abot_recon import ABotRecon
 from abot_recon.preprocessing import preprocess_image
 
-
 MODEL_ID = "acvlab/ABot-Recon"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run ABot-Recon on RGB images or a video")
+    inputs = parser.add_mutually_exclusive_group()
+    inputs.add_argument("--image-dir", type=Path, default=Path("examples/images"))
+    inputs.add_argument("--video", type=Path, help="input video file")
+    add_demo_arguments(parser)
+    return parser
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run ABot-Recon on an RGB video")
-    parser.add_argument("--image-dir", type=Path, default=Path("examples/images"))
+    return build_parser().parse_args()
+
+
+def add_demo_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--checkpoint",
         default=MODEL_ID,
@@ -67,15 +78,66 @@ def parse_args() -> argparse.Namespace:
         default=Path("checkpoints/loop/dinov2_vitb14_pretrain.pth"),
     )
     parser.add_argument("--loop-output-dir", type=Path, default=Path("outputs/loop"))
-    return parser.parse_args()
+
+
+def extract_video_frames(
+    video_path: Path,
+    output_dir: Path,
+    *,
+    start: int,
+    end: int | None,
+    stride: int,
+    video_capture_factory=None,
+) -> list[Path]:
+    if stride <= 0:
+        raise ValueError("--stride must be positive")
+    if start < 0:
+        raise ValueError("--start must be non-negative")
+    if end is not None and end < 0:
+        raise ValueError("--end must be non-negative")
+
+    if video_capture_factory is None:
+        try:
+            import cv2
+        except ImportError as exc:
+            raise RuntimeError(
+                "Video input requires opencv-python. Install it with `pip install -e '.[video]'`."
+            ) from exc
+
+        def video_capture_factory(path: Path):
+            return cv2.VideoCapture(str(path))
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    capture = video_capture_factory(video_path)
+    if not capture.isOpened():
+        capture.release()
+        raise ValueError(f"Could not open video: {video_path}")
+
+    selected: list[Path] = []
+    frame_index = 0
+    try:
+        while end is None or frame_index < end:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            if frame_index >= start and (frame_index - start) % stride == 0:
+                rgb = np.ascontiguousarray(frame[:, :, ::-1])
+                frame_path = output_dir / f"{len(selected):08d}.jpg"
+                Image.fromarray(rgb, mode="RGB").save(frame_path, format="JPEG", quality=95)
+                selected.append(frame_path)
+            frame_index += 1
+    finally:
+        capture.release()
+
+    if not selected:
+        raise ValueError(f"No video frames selected from {video_path}")
+    return selected
 
 
 def collect_images(directory: Path, start: int, end: int | None, stride: int) -> list[Path]:
     if stride <= 0:
         raise ValueError("--stride must be positive")
-    images = sorted(
-        path for path in directory.iterdir() if path.suffix.lower() in IMAGE_SUFFIXES
-    )
+    images = sorted(path for path in directory.iterdir() if path.suffix.lower() in IMAGE_SUFFIXES)
     selected = images[start:end:stride]
     if not selected:
         raise ValueError(f"No input images selected from {directory}")
@@ -105,20 +167,13 @@ def save_result(output_dir: Path, result, images: list[Path], dense_indices) -> 
         for index in indices:
             with Image.open(images[index]) as image:
                 tensor, _ = preprocess_image(image)
-            colors.append(
-                (tensor.clamp(0, 1) * 255).round().to(torch.uint8).permute(1, 2, 0)
-            )
+            colors.append((tensor.clamp(0, 1) * 255).round().to(torch.uint8).permute(1, 2, 0))
         torch.save(torch.stack(colors), output_dir / "colors.pt")
     with (output_dir / "metadata.json").open("w", encoding="utf-8") as handle:
         json.dump(result.metadata, handle, indent=2)
 
 
-def main() -> None:
-    args = parse_args()
-    if args.dense_stride <= 0:
-        raise ValueError("--dense-stride must be positive")
-    images = collect_images(args.image_dir, args.start, args.end, args.stride)
-
+def run_reconstruction(args: argparse.Namespace, images: list[Path]) -> None:
     model = ABotRecon.from_pretrained(
         args.checkpoint,
         device=args.device,
@@ -144,6 +199,29 @@ def main() -> None:
     )
     save_result(args.output_dir, result, images, dense_indices)
     print(f"Processed {len(images)} frames; results saved to {args.output_dir}")
+
+
+def main() -> None:
+    args = parse_args()
+    if args.dense_stride <= 0:
+        raise ValueError("--dense-stride must be positive")
+
+    if args.video is None:
+        images = collect_images(args.image_dir, args.start, args.end, args.stride)
+        run_reconstruction(args, images)
+        return
+
+    if not args.video.is_file():
+        raise FileNotFoundError(args.video)
+    with tempfile.TemporaryDirectory(prefix="abot-recon-frames-") as frame_dir:
+        images = extract_video_frames(
+            args.video,
+            Path(frame_dir),
+            start=args.start,
+            end=args.end,
+            stride=args.stride,
+        )
+        run_reconstruction(args, images)
 
 
 if __name__ == "__main__":
