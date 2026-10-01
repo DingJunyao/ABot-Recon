@@ -229,3 +229,168 @@ def test_build_trajectory_returns_centers_and_normalized_optical_forwards():
     assert result["coordinate_system"] == "original ABot-Recon world coordinates"
     assert result["positions"] == [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]
     assert result["forwards"] == [[0.0, 1.0, 0.0], [0.0, 1.0, 0.0]]
+
+import json
+
+from scripts.export_point_cloud_chunks import (
+    compact_dtype,
+    export_point_cloud_chunks,
+    main,
+    parse_args,
+)
+
+
+def test_compact_dtypes_have_exact_layouts():
+    quantized = compact_dtype("uint16")
+    exact = compact_dtype("float32")
+
+    assert quantized.itemsize == 10
+    assert quantized.names == ("position", "color")
+    assert quantized["position"].base == np.dtype("<u2")
+    assert quantized["position"].shape == (3,)
+    assert quantized.fields["position"][1] == 0
+    assert quantized["color"].base == np.dtype("<u4")
+    assert quantized.fields["color"][1] == 6
+
+    assert exact.itemsize == 16
+    assert exact.names == ("position", "color")
+    assert exact["position"].base == np.dtype("<f4")
+    assert exact["position"].shape == (3,)
+    assert exact.fields["position"][1] == 0
+    assert exact["color"].base == np.dtype("<u4")
+    assert exact.fields["color"][1] == 12
+
+
+def test_export_chunks_uses_quantized_records_manifest_and_trajectory(tmp_path):
+    input_path = tmp_path / "points.ply"
+    output_dir = tmp_path / "chunks"
+    points = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 2.0, 2.5], [2.0, 4.0, 5.0], [32767.0, 8.0, 7.5]],
+        dtype=np.float32,
+    )
+    colors = np.array(
+        [[255, 0, 0], [0, 255, 0], [0, 0, 255], [1, 2, 3]], dtype=np.uint8
+    )
+    make_rgb_ply(input_path, points, colors)
+
+    poses = np.zeros((2, 4, 4), dtype=np.float32)
+    poses[:, 3, 3] = 1.0
+    poses[:, :3, 3] = [[0, 0, 0], [2, 0, 0]]
+    poses[:, :3, 2] = [0, 0, 1]
+    poses_path = tmp_path / "camera_poses.npy"
+    np.save(poses_path, poses)
+
+    manifest = export_point_cloud_chunks(
+        input_path,
+        output_dir,
+        poses_path=poses_path,
+        chunk_size=3,
+        position_encoding="uint16",
+    )
+
+    assert manifest["format"] == "abot-point-cloud-chunks"
+    assert manifest["version"] == 1
+    assert manifest["point_count"] == 4
+    assert manifest["chunk_count"] == 2
+    assert manifest["chunk_size"] == 3
+    assert manifest["position_encoding"] == "uint16"
+    assert manifest["stride"] == 10
+    assert manifest["bounds"]["min"] == [0.0, 0.0, 0.0]
+    assert manifest["bounds"]["max"] == [32767.0, 8.0, 7.5]
+    assert manifest["chunks"][0]["count"] == 3
+    assert manifest["chunks"][0]["bounds"] == {
+        "min": [0.0, 0.0, 0.0],
+        "max": [2.0, 4.0, 5.0],
+    }
+    assert manifest["chunks"][1]["count"] == 1
+    assert manifest["trajectory"] == "trajectory.json"
+    assert manifest["robust_bounds"]["center"] == [1.5, 3.0, 3.75]
+    assert manifest["robust_bounds"]["radius"] > 0
+
+    loaded = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert loaded == manifest
+    first = np.fromfile(output_dir / "chunk-00000.pbin", dtype=compact_dtype("uint16"))
+    assert len(first) == 3
+    assert first[0]["color"] == 0xFF0000FF
+    assert first[1]["color"] == 0xFF00FF00
+    assert first[2]["color"] == 0xFFFF0000
+
+    decoded_min = manifest["bounds"]["min"]
+    decoded_max = manifest["bounds"]["max"]
+    decoded = decoded_min + first["position"].astype(np.float64) * (
+        (np.asarray(decoded_max) - np.asarray(decoded_min)) / 65535.0
+    )
+    assert np.allclose(decoded[:3], points[:3], atol=1.0)
+
+    trajectory = json.loads((output_dir / "trajectory.json").read_text(encoding="utf-8"))
+    assert trajectory["positions"] == [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]
+
+
+def test_export_chunks_supports_float32_and_endpoint_inclusive_point_budget(tmp_path):
+    input_path = tmp_path / "points.ply"
+    output_dir = tmp_path / "chunks"
+    points = np.arange(12, dtype=np.float32).reshape(4, 3)
+    colors = np.repeat(np.array([[9, 8, 7]], dtype=np.uint8), 4, axis=0)
+    make_rgb_ply(input_path, points, colors)
+
+    manifest = export_point_cloud_chunks(
+        input_path,
+        output_dir,
+        chunk_size=2,
+        max_points=2,
+        position_encoding="float32",
+    )
+
+    assert manifest["point_count"] == 2
+    assert manifest["stride"] == 16
+    assert manifest["chunks"][0]["bounds"] == {
+        "min": [0.0, 1.0, 2.0],
+        "max": [9.0, 10.0, 11.0],
+    }
+    records = np.fromfile(output_dir / "chunk-00000.pbin", dtype=compact_dtype("float32"))
+    assert np.array_equal(records["position"], points[[0, 3]])
+    assert np.all(records["color"] == 0xFF070809)
+
+
+def test_export_chunks_rejects_invalid_arguments_before_creating_output(tmp_path):
+    input_path = tmp_path / "points.ply"
+    make_rgb_ply(input_path, np.zeros((1, 3), np.float32), np.zeros((1, 3), np.uint8))
+    invalid_arguments = [
+        ({"chunk_size": 0}, tmp_path / "a"),
+        ({"max_points": -1}, tmp_path / "b"),
+        ({"position_encoding": "int8"}, tmp_path / "c"),
+    ]
+
+    for extra_args, output_dir in invalid_arguments:
+        with pytest.raises(ValueError, match="must be|Unsupported position encoding"):
+            export_point_cloud_chunks(input_path, output_dir, **extra_args)
+        assert not output_dir.exists()
+
+
+def test_parse_args_uses_full_resolution_defaults(tmp_path):
+    args = parse_args(
+        [
+            "--input", str(tmp_path / "in.ply"),
+            "--output-dir", str(tmp_path / "out"),
+        ]
+    )
+
+    assert args.chunk_size == 250000
+    assert args.max_points == 0
+    assert args.position_encoding == "uint16"
+    assert args.poses is None
+
+
+def test_main_writes_compact_chunks_and_reports_result(tmp_path, capsys):
+    input_path = tmp_path / "points.ply"
+    output_dir = tmp_path / "chunks"
+    points = np.array([[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]], dtype=np.float32)
+    colors = np.array([[255, 0, 0], [0, 255, 0]], dtype=np.uint8)
+    make_rgb_ply(input_path, points, colors)
+
+    main(["--input", str(input_path), "--output-dir", str(output_dir)])
+
+    assert (output_dir / "manifest.json").exists()
+    assert (output_dir / "chunk-00000.pbin").stat().st_size == 20
+    assert not (output_dir / "trajectory.json").exists()
+    assert "Wrote 1 chunks, 2 points, 0.00 MB compact; trajectory: no" in capsys.readouterr().out

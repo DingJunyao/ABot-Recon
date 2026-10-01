@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -267,3 +269,155 @@ def point_budget_indices(point_count: int, max_points: int) -> np.ndarray:
     if max_points == 1:
         return np.array([point_count // 2], dtype=np.int64)
     return np.linspace(0, point_count - 1, max_points, dtype=np.int64)
+
+
+def compact_dtype(position_encoding: str = "uint16") -> np.dtype:
+    """Return the on-disk record layout for a compact point chunk."""
+    if position_encoding == "uint16":
+        return np.dtype([("position", "<u2", (3,)), ("color", "<u4")])
+    if position_encoding == "float32":
+        return np.dtype([("position", "<f4", (3,)), ("color", "<u4")])
+    raise ValueError(f"Unsupported position encoding: {position_encoding}")
+
+
+def _bounds_manifest(points: np.ndarray) -> dict[str, list[float]]:
+    """Return JSON-safe source-coordinate bounds for finite XYZ points."""
+    return {
+        "min": points.min(axis=0).astype(np.float64, copy=False).tolist(),
+        "max": points.max(axis=0).astype(np.float64, copy=False).tolist(),
+    }
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    """Write deterministic, pretty UTF-8 JSON."""
+    path.write_text(json.dumps(payload, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+
+
+def export_point_cloud_chunks(
+    input_path: Path,
+    output_dir: Path,
+    poses_path: Path | None = None,
+    chunk_size: int = 250_000,
+    max_points: int = 0,
+    position_encoding: str = "uint16",
+) -> dict[str, Any]:
+    """Convert a finite RGB PLY into compact chunks and a viewing manifest."""
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    if max_points < 0:
+        raise ValueError("max_points must be non-negative")
+    dtype = compact_dtype(position_encoding)
+
+    points, colors = read_rgb_ply(Path(input_path))
+    selected = point_budget_indices(len(points), max_points)
+    points = points[selected]
+    colors = colors[selected]
+    if len(points) == 0:
+        raise ValueError("Input point cloud has no finite XYZ points")
+
+    trajectory = None
+    if poses_path is not None:
+        trajectory = build_trajectory(load_camera_poses(Path(poses_path)))
+
+    bounds_min = points.min(axis=0).astype(np.float64, copy=False)
+    bounds_max = points.max(axis=0).astype(np.float64, copy=False)
+    scale = np.maximum(bounds_max - bounds_min, np.finfo(np.float64).eps)
+    packed_colors = (
+        colors[:, 0].astype(np.uint32)
+        | (colors[:, 1].astype(np.uint32) << np.uint32(8))
+        | (colors[:, 2].astype(np.uint32) << np.uint32(16))
+        | np.uint32(0xFF000000)
+    )
+
+    chunks: list[dict[str, Any]] = []
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    offset = 0
+    for chunk_index, start in enumerate(range(0, len(points), chunk_size)):
+        stop = min(start + chunk_size, len(points))
+        chunk_points = points[start:stop]
+
+        records = np.empty(stop - start, dtype=dtype)
+        if position_encoding == "uint16":
+            records["position"] = np.rint(
+                (chunk_points.astype(np.float64, copy=False) - bounds_min) / scale * 65535.0
+            ).astype("<u2", copy=False)
+        else:
+            records["position"] = chunk_points.astype("<f4", copy=False)
+        records["color"] = packed_colors[start:stop]
+
+        chunk_file = f"chunk-{chunk_index:05d}.pbin"
+        records.tofile(output_dir / chunk_file)
+        chunks.append(
+            {
+                "file": chunk_file,
+                "offset": offset,
+                "count": stop - start,
+                "bounds": _bounds_manifest(chunk_points),
+            }
+        )
+        offset += stop - start
+
+    manifest: dict[str, Any] = {
+        "format": "abot-point-cloud-chunks",
+        "version": 1,
+        "point_count": len(points),
+        "chunk_count": len(chunks),
+        "chunk_size": chunk_size,
+        "position_encoding": position_encoding,
+        "stride": dtype.itemsize,
+        "bounds": {
+            "min": bounds_min.tolist(),
+            "max": bounds_max.tolist(),
+        },
+        "robust_bounds": robust_bounds(points),
+        "chunks": chunks,
+    }
+
+    if trajectory is not None:
+        _write_json(output_dir / "trajectory.json", trajectory)
+        manifest["trajectory"] = "trajectory.json"
+    _write_json(output_dir / "manifest.json", manifest)
+    return manifest
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse converter command-line arguments."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--input", required=True, type=Path, help="input binary RGB PLY")
+    parser.add_argument("--poses", type=Path, help="optional [N,4,4] camera poses")
+    parser.add_argument("--output-dir", required=True, type=Path, help="output directory")
+    parser.add_argument("--chunk-size", type=int, default=250_000, help="points per chunk")
+    parser.add_argument(
+        "--max-points", type=int, default=0, help="maximum retained points (0 means all)"
+    )
+    parser.add_argument(
+        "--position-encoding",
+        choices=("uint16", "float32"),
+        default="uint16",
+        help="XYZ storage layout",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Run the point-cloud chunk exporter and print a compact summary."""
+    args = parse_args(argv)
+    manifest = export_point_cloud_chunks(
+        args.input,
+        args.output_dir,
+        poses_path=args.poses,
+        chunk_size=args.chunk_size,
+        max_points=args.max_points,
+        position_encoding=args.position_encoding,
+    )
+    compact_mb = manifest["point_count"] * manifest["stride"] / 1_000_000
+    trajectory_written = "yes" if "trajectory" in manifest else "no"
+    print(
+        f"Wrote {manifest['chunk_count']} chunks, {manifest['point_count']} points, "
+        f"{compact_mb:.2f} MB compact; trajectory: {trajectory_written}"
+    )
+
+
+if __name__ == "__main__":
+    main()
