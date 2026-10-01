@@ -1,0 +1,17 @@
+[
+  {
+    "name": "demo_loop · full 23.6M",
+    "manifest": "/outputs/demo_loop/pseudo_gaussian_chunks/manifest.json",
+    "poses": "/outputs/demo_loop/camera_poses.npy"
+  },
+  {
+    "name": "demo_loop · exact RGB 25.6M",
+    "manifest": "/outputs/demo_loop/pseudo_gaussian_rgb_chunks/manifest.json",
+    "poses": "/outputs/demo_loop/camera_poses.npy"
+  },
+  {
+    "name": "demo · 1.18M",
+    "manifest": "/outputs/demo/pseudo_gaussian_chunks/manifest.json",
+    "poses": "/outputs/demo/camera_poses.npy"
+  }
+]

@@ -1,0 +1,514 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ABot-Recon 伪高斯查看器</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { color-scheme: dark; font-family: Inter, "Segoe UI", sans-serif; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #080a0d; color: #e8edf5; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  .panel { position: fixed; top: 16px; left: 16px; width: 292px; padding: 16px; border: 1px solid rgba(255,255,255,.12); border-radius: 12px; background: rgba(11,15,20,.82); backdrop-filter: blur(12px); box-shadow: 0 12px 40px rgba(0,0,0,.35); }
+  h1 { margin: 0 0 4px; font-size: 15px; letter-spacing: .02em; }
+  p { margin: 0 0 14px; color: #9aa7b8; font-size: 12px; line-height: 1.5; }
+  .row { display: flex; gap: 8px; margin-bottom: 12px; }
+  button { flex: 1; padding: 9px 10px; border: 0; border-radius: 7px; background: #243044; color: #e8edf5; font: inherit; font-size: 12px; cursor: pointer; }
+  button:hover { background: #30405a; }
+  button.active { background: #48b1ff; color: #071018; font-weight: 700; }
+  label { display: grid; grid-template-columns: 82px 1fr 48px; align-items: center; gap: 8px; margin: 9px 0; font-size: 12px; color: #b8c3d1; }
+  input[type="range"] { width: 100%; accent-color: #48b1ff; }
+  output { text-align: right; font-variant-numeric: tabular-nums; color: #e8edf5; }
+  .status { min-height: 18px; margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,.1); color: #9aa7b8; font-size: 11px; }
+  .hint { position: fixed; right: 16px; bottom: 16px; color: #7f8b9b; font-size: 11px; text-align: right; line-height: 1.6; }
+  .loading { position: fixed; inset: 0; display: grid; place-items: center; background: #080a0d; z-index: 2; font-size: 14px; }
+  .loading[hidden] { display: none; }
+  @media (max-width: 640px) { .panel { width: calc(100vw - 32px); } .hint { display: none; } }
+</style>
+</head>
+<body>
+<div id="loading" class="loading">正在读取伪高斯 PLY…</div>
+<canvas id="canvas"></canvas>
+<section class="panel" aria-label="伪高斯预览控制">
+  <h1>伪 Gaussian Splat 预览</h1>
+  <p>由现有点云生成的各向同性 Gaussian，不是照片训练出的真 3DGS。</p>
+  <label>点云 <select id="dataset">
+    <option value="custom">自定义 manifest…</option>
+  </select></label>
+  <label>Manifest <input id="manifestInput" type="url" placeholder="/outputs/.../manifest.json"></label>
+  <label>Pose NPY <input id="poseInput" type="url" placeholder="/outputs/.../camera_poses.npy"></label>
+  <button id="loadDataset" type="button">加载所选点云</button>
+  <div class="row" role="group" aria-label="查看模式">
+    <button id="orbitButton" class="active" type="button">交互查看</button>
+    <button id="driveButton" type="button">行车播放</button>
+    <button id="pauseButton" type="button">暂停</button>
+  </div>
+  <label>天空背景 <input id="skyBackground" type="checkbox" checked></label>
+  <label>透明混合 <input id="transparentBlending" type="checkbox" checked></label>
+  <label>画面缩放 <input id="zoom" type="range" min="0.5" max="5" step="0.05" value="1.5"><output id="zoomValue">1.50×</output></label>
+  <label>视角 FOV <input id="fov" type="range" min="30" max="100" step="1" value="70"><output id="fovValue">70°</output></label>
+  <label>泼溅大小 <input id="splatScale" type="range" min="0.2" max="3" step="0.05" value="1"><output id="splatScaleValue">1.00</output></label>
+  <label>整体透明 <input id="alphaScale" type="range" min="0.1" max="1" step="0.05" value="0.85"><output id="alphaScaleValue">0.85</output></label>
+  <label>播放速度 <input id="speed" type="range" min="1" max="12" step="1" value="3"><output id="speedValue">3 f/s</output></label>
+  <label>播放进度 <input id="playbackProgress" type="range" min="0" max="1" step="0.0001" value="0"><output id="playbackProgressValue">0%</output></label>
+  <label>相机高度 <input id="cameraHeight" type="range" min="-20" max="80" step="0.5" value="2"><output id="cameraHeightValue">2.0 m</output></label>
+  <label>相机后退 <input id="backoff" type="range" min="0" max="30" step="1" value="8"><output id="backoffValue">8 m</output></label>
+  <label>水平视角 <input id="cameraYaw" type="range" min="-180" max="180" step="1" value="0"><output id="cameraYawValue">0°</output></label>
+  <label>俯仰视角 <input id="cameraPitch" type="range" min="-45" max="45" step="1" value="0"><output id="cameraPitchValue">0°</output></label>
+  <div id="status" class="status">正在加载…</div>
+</section>
+<div class="hint">拖拽旋转 · 滚轮缩放 · 右键平移<br>行车播放会沿 camera_poses.npy 前进</div>
+<script>
+'use strict';
+
+const canvas = document.getElementById('canvas');
+const gl = canvas.getContext('webgl2', { antialias: false, alpha: false });
+if (!gl) throw new Error('此预览需要 WebGL2');
+
+const loading = document.getElementById('loading');
+const statusElement = document.getElementById('status');
+const state = {
+  mode: 'orbit', yaw: -0.75, pitch: 0.42, target: [0, 0, 0], orbitDistance: 220,
+  frame: 0, poses: null, pointCount: 0, bounds: null, chunks: [], loadedCount: 0, drag: null, zoom: 1.5, fov: 70,
+  splatScale: 1, alphaScale: .85, speed: 3, backoff: 8, cameraHeight: 2, cameraYaw: 0, cameraPitch: 0, playing: true, skyBackground: true, transparentBlending: true
+};
+
+const skyVertexSource = `#version 300 es
+precision highp float;
+out vec2 screenPosition;
+void main() {
+  vec2 positions[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  screenPosition = positions[gl_VertexID];
+  gl_Position = vec4(screenPosition, 0.999, 1.0);
+}`;
+const skyFragmentSource = `#version 300 es
+precision highp float;
+in vec2 screenPosition;
+uniform vec2 resolution;
+out vec4 fragmentColor;
+void main() {
+  float fraction = gl_FragCoord.y / resolution.y;
+  vec3 zenith = vec3(0.184, 0.447, 0.886);
+  vec3 horizon = vec3(0.749, 0.867, 0.961);
+  vec3 ground = vec3(0.388, 0.427, 0.463);
+  vec3 color = fraction > 0.5 ? mix(horizon, zenith, smoothstep(0.5, 1.0, fraction)) : mix(ground, horizon, smoothstep(0.35, 0.5, fraction));
+  fragmentColor = vec4(color, 1.0);
+}`;
+const skyProgram = gl.createProgram();
+gl.attachShader(skyProgram, compile(gl.VERTEX_SHADER, skyVertexSource));
+gl.attachShader(skyProgram, compile(gl.FRAGMENT_SHADER, skyFragmentSource));
+gl.linkProgram(skyProgram);
+if (!gl.getProgramParameter(skyProgram, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(skyProgram));
+const skyUniforms = { resolution: gl.getUniformLocation(skyProgram, 'resolution') };
+const skyVao = gl.createVertexArray();
+
+const vertexSource = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 center;
+layout(location=1) in vec3 color;
+layout(location=2) in float radius;
+layout(location=3) in float opacity;
+uniform mat4 view;
+uniform mat4 projection;
+uniform float viewportHeight;
+uniform float splatScale;
+out vec3 vertexColor;
+out float vertexOpacity;
+void main() {
+  vec4 viewPosition = view * vec4(center, 1.0);
+  gl_Position = projection * viewPosition;
+  float depth = max(0.1, -viewPosition.z);
+  float screenSigma = projection[1][1] * radius / depth * 0.5 * viewportHeight;
+  gl_PointSize = clamp(screenSigma * 6.0 * splatScale, 1.0, 384.0);
+  vertexColor = color;
+  vertexOpacity = opacity;
+}`;
+
+const fragmentSource = `#version 300 es
+precision highp float;
+in vec3 vertexColor;
+in float vertexOpacity;
+uniform float alphaScale;
+out vec4 fragmentColor;
+void main() {
+  vec2 normalized = gl_PointCoord * 2.0 - 1.0;
+  float r2 = dot(normalized, normalized);
+  if (r2 > 1.0) discard;
+  float gaussian = exp(-4.5 * r2);
+  float alpha = clamp(vertexOpacity * alphaScale * gaussian, 0.0, 1.0);
+  fragmentColor = vec4(vertexColor, alpha);
+}`;
+
+function compile(type, source) {
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
+  return shader;
+}
+const program = gl.createProgram();
+gl.attachShader(program, compile(gl.VERTEX_SHADER, vertexSource));
+gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fragmentSource));
+gl.linkProgram(program);
+if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+gl.useProgram(program);
+const uniforms = {
+  view: gl.getUniformLocation(program, 'view'),
+  projection: gl.getUniformLocation(program, 'projection'),
+  viewportHeight: gl.getUniformLocation(program, 'viewportHeight'),
+  splatScale: gl.getUniformLocation(program, 'splatScale'),
+  alphaScale: gl.getUniformLocation(program, 'alphaScale')
+};
+
+function parsePly(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const probe = new TextDecoder("ascii").decode(bytes.subarray(0, Math.min(bytes.length, 262144)));
+  const marker = probe.indexOf("end_header\n");
+  const headerEnd = marker < 0 ? -1 : marker + "end_header\n".length;
+  if (headerEnd < 0) throw new Error('未找到 PLY end_header');
+  const header = new TextDecoder().decode(bytes.slice(0, headerEnd));
+  const sizeMatch = header.match(/element\s+vertex\s+(\d+)/);
+  if (!sizeMatch) throw new Error('PLY 中没有 vertex 数量');
+  const count = Number(sizeMatch[1]);
+  const sizes = { float: 4, uchar: 1 };
+  const offsets = new Map();
+  let offset = 0;
+  for (const line of header.split(/\r?\n/)) {
+    const match = line.match(/^property\s+(float|uchar)\s+(\S+)\s*$/);
+    if (!match) continue;
+    offsets.set(match[2], offset);
+    offset += sizes[match[1]];
+  }
+  const required = ['x', 'y', 'z', 'f_dc_0', 'f_dc_1', 'f_dc_2', 'opacity', 'scale_0', 'scale_1', 'scale_2'];
+  if (required.some(name => !offsets.has(name))) throw new Error('不是标准 3DGS PLY');
+  const stride = 24;
+  const gpuData = new Uint8Array(count * stride);
+  const gpuView = new DataView(gpuData.buffer);
+  const inputView = new DataView(buffer, headerEnd, bytes.length - headerEnd);
+  const bounds = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
+  const dcConstant = 0.28209479177387814;
+  for (let i = 0; i < count; i++) {
+    const base = i * offset;
+    const out = i * stride;
+    const x = inputView.getFloat32(base + offsets.get('x'), true);
+    const y = inputView.getFloat32(base + offsets.get('y'), true);
+    const z = inputView.getFloat32(base + offsets.get('z'), true);
+    gpuView.setFloat32(out, x, true);
+    gpuView.setFloat32(out + 4, y, true);
+    gpuView.setFloat32(out + 8, z, true);
+    const rgb = ['f_dc_0', 'f_dc_1', 'f_dc_2'].map((name, channel) => {
+      const dc = inputView.getUint8(base + offsets.get(name)) / 255.0 * 2.0 - 1.0;
+      return Math.min(1, Math.max(0, 0.5 + dcConstant * dc)) * 255;
+    });
+    gpuView.setUint8(out + 12, rgb[0]);
+    gpuView.setUint8(out + 13, rgb[1]);
+    gpuView.setUint8(out + 14, rgb[2]);
+    gpuView.setUint8(out + 15, 255);
+    const radius = Math.max(
+      Math.exp(inputView.getFloat32(base + offsets.get('scale_0'), true)),
+      Math.exp(inputView.getFloat32(base + offsets.get('scale_1'), true)),
+      Math.exp(inputView.getFloat32(base + offsets.get('scale_2'), true))
+    );
+    gpuView.setFloat32(out + 16, radius, true);
+    const rawOpacity = inputView.getFloat32(base + offsets.get('opacity'), true);
+    gpuView.setFloat32(out + 20, 1 / (1 + Math.exp(-rawOpacity)), true);
+    bounds.min[0] = Math.min(bounds.min[0], x); bounds.max[0] = Math.max(bounds.max[0], x);
+    bounds.min[1] = Math.min(bounds.min[1], y); bounds.max[1] = Math.max(bounds.max[1], y);
+    bounds.min[2] = Math.min(bounds.min[2], z); bounds.max[2] = Math.max(bounds.max[2], z);
+  }
+  return { gpuData, count, bounds };
+}
+
+async function parseNpyPoses(url) {
+  const response = await fetch(url);
+  if (!response.ok) return [];
+  const buffer = await response.arrayBuffer();
+  const bytes = new Uint8Array(buffer, 0, 8);
+  if (bytes[0] !== 147 || String.fromCharCode(...bytes.subarray(1, 6)) !== 'NUMPY') return [];
+  const headerLength = new DataView(buffer, 8, 2).getUint16(0, true);
+  const dataOffset = 10 + headerLength;
+  const header = new TextDecoder('ascii').decode(new Uint8Array(buffer, 10, headerLength));
+  const descrMatch = header.match(/'descr'\s*:\s*'([^']+)'/);
+  const shapeMatch = header.match(/'shape'\s*:\s*\(([^)]*)\)/);
+  if (!descrMatch || !shapeMatch) throw new Error('无法解析 camera_poses.npy header');
+  const descr = descrMatch[1];
+  const bytesPerElement = descr.includes('f8') || descr.includes('float64') ? 8 :
+                          descr.includes('f4') || descr.includes('float32') ? 4 : 0;
+  if (!bytesPerElement) throw new Error(`不支持的位姿 dtype: ${descr}`);
+  const dimensions = shapeMatch[1].split(',').map(value => Number(value.trim())).filter(Number.isFinite);
+  const count = dimensions.length === 3 ? dimensions[0] : Math.floor((buffer.byteLength - dataOffset) / (16 * bytesPerElement));
+  const poseBytes = 16 * bytesPerElement;
+  const view = new DataView(buffer, dataOffset, count * poseBytes);
+  const poses = [];
+  const transform = [1,0,0,0, 0,-1,0,0, 0,0,-1,0, 0,0,0,1];
+  const scratch = new Float64Array(16);  for (let i = 0; i < count; i++) {
+    const base = i * poseBytes;
+    for (let j = 0; j < 16; j++) scratch[j] = bytesPerElement === 8 ? view.getFloat64(base + j * 8, true) : view.getFloat32(base + j * 4, true);
+    // T @ pose, returned in column-major order expected by mat4 helpers.
+    const out = new Float32Array(16);
+    for (let col = 0; col < 4; col++) for (let row = 0; row < 4; row++) {
+      let sum = 0;
+      for (let k = 0; k < 4; k++) sum += transform[row + k * 4] * scratch[k * 4 + col];
+      out[col * 4 + row] = sum;
+    }
+    poses.push(out);
+  }
+  return poses;
+}
+
+function invertMatrix(matrix) {
+  const a00=matrix[0],a01=matrix[1],a02=matrix[2],a03=matrix[3],a10=matrix[4],a11=matrix[5],a12=matrix[6],a13=matrix[7],a20=matrix[8],a21=matrix[9],a22=matrix[10],a23=matrix[11],a30=matrix[12],a31=matrix[13],a32=matrix[14],a33=matrix[15];
+  const b00=a00*a11-a01*a10,b01=a00*a12-a02*a10,b02=a00*a13-a03*a10,b03=a01*a12-a02*a11,b04=a01*a13-a03*a11,b05=a02*a13-a03*a12,b06=a20*a31-a21*a30,b07=a20*a32-a22*a30,b08=a20*a33-a23*a30,b09=a21*a32-a22*a31,b10=a21*a33-a23*a31,b11=a22*a33-a23*a32;
+  let det=b00*b11-b01*b10+b02*b09+b03*b08-b04*b07+b05*b06;
+  if (!det) return new Float32Array(16); det=1/det;
+  return new Float32Array([(a11*b11-a12*b10+a13*b09)*det,(a02*b10-a01*b11-a03*b09)*det,(a31*b05-a32*b04+a33*b03)*det,(a22*b04-a21*b05-a23*b03)*det,(a12*b08-a10*b11-a13*b07)*det,(a00*b11-a02*b08+a03*b07)*det,(a32*b02-a30*b05-a33*b01)*det,(a20*b05-a22*b02+a23*b01)*det,(a10*b10-a11*b08+a13*b06)*det,(a01*b08-a00*b10-a03*b06)*det,(a30*b04-a31*b02+a33*b00)*det,(a21*b02-a20*b04-a23*b00)*det,(a11*b07-a10*b09-a12*b06)*det,(a00*b09-a01*b07+a02*b06)*det,(a31*b01-a30*b03-a32*b00)*det,(a20*b03-a21*b01+a22*b00)*det]);
+}
+function perspective(fovDegrees, aspect, near, far, zoom=1) {
+  const f = zoom/Math.tan(fovDegrees*Math.PI/360), inv=1/(near-far);
+  return new Float32Array([f/aspect,0,0,0, 0,f,0,0, 0,0,(far+near)*inv,-1, 0,0,2*far*near*inv,0]);
+}
+function normalize(v) { const n=Math.hypot(v[0],v[1],v[2])||1; return [v[0]/n,v[1]/n,v[2]/n]; }
+function cross(a,b) { return [a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]]; }
+function subtract(a,b) { return [a[0]-b[0],a[1]-b[1],a[2]-b[2]]; }
+function lookAt(eye, target, up) {
+  const z=normalize(subtract(eye,target)), x=normalize(cross(up,z)), y=cross(z,x);
+  return new Float32Array([x[0],y[0],z[0],0, x[1],y[1],z[1],0, x[2],y[2],z[2],0, -(x[0]*eye[0]+x[1]*eye[1]+x[2]*eye[2]),-(y[0]*eye[0]+y[1]*eye[1]+y[2]*eye[2]),-(z[0]*eye[0]+z[1]*eye[1]+z[2]*eye[2]),1]);
+}
+function drivePose(pose, backoff, height, yawDegrees, pitchDegrees) {
+  const result = new Float32Array(pose);
+  const column = index => [pose[index], pose[index + 1], pose[index + 2]];
+  const right = column(0), up = column(4), forward = column(8);
+  for (let row=0; row<3; row++) {
+    result[12+row] += -up[row] * height - forward[row] * backoff;
+  }
+
+  // Convert ABot's +Z-forward camera into WebGL's -Z-forward camera. Positive
+  // pitch looks upward; positive yaw rotates clockwise when viewed from above.
+  const pitch = pitchDegrees * Math.PI / 180;
+  const cosPitch = Math.cos(pitch), sinPitch = Math.sin(pitch);
+  let backward = [-forward[0] * cosPitch - up[0] * sinPitch,
+                  -forward[1] * cosPitch - up[1] * sinPitch,
+                  -forward[2] * cosPitch - up[2] * sinPitch];
+  let cameraUp = [-up[0] * cosPitch - forward[0] * sinPitch,
+                  -up[1] * cosPitch - forward[1] * sinPitch,
+                  -up[2] * cosPitch - forward[2] * sinPitch];
+  let cameraRight = right.slice();
+
+  const yaw = yawDegrees * Math.PI / 180;
+  const cosYaw = Math.cos(yaw), sinYaw = Math.sin(yaw);
+  const oldBackward = backward.slice();
+  for (let axis=0; axis<3; axis++) {
+    cameraRight[axis] = right[axis] * cosYaw - oldBackward[axis] * sinYaw;
+    backward[axis] = oldBackward[axis] * cosYaw + right[axis] * sinYaw;
+  }
+
+  result[0]=cameraRight[0]; result[1]=cameraRight[1]; result[2]=cameraRight[2];
+  result[4]=cameraUp[0]; result[5]=cameraUp[1]; result[6]=cameraUp[2];
+  result[8]=backward[0]; result[9]=backward[1]; result[10]=backward[2];
+  return result;
+}function createChunkGpu(data) {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const buffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,3,gl.FLOAT,false,24,0);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1,3,gl.UNSIGNED_BYTE,true,24,12);
+  gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2,1,gl.FLOAT,false,24,16);
+  gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3,1,gl.FLOAT,false,24,20);
+  return vao;
+}
+
+function updateLoadingStatus() {
+  statusElement.textContent = `加载中 ${state.loadedCount.toLocaleString()}/${state.pointCount.toLocaleString()} Gaussians`;
+}
+
+async function loadChunk(manifestUrl, chunk, index) {
+  const url = new URL(chunk.file, manifestUrl).href;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Chunk ${index} failed: HTTP ${response.status}`);
+  const data = await response.arrayBuffer();
+  if (data.byteLength !== chunk.count * 24) throw new Error(`Chunk ${index} has invalid byte length`);
+  state.chunks[index] = { vao: createChunkGpu(data), count: chunk.count, bounds: chunk.bounds };
+  state.loadedCount += chunk.count;
+  updateLoadingStatus();
+}
+
+async function loadChunks(manifestUrl, manifest) {
+  let next = 0;
+  const workerCount = 4;
+  async function worker() {
+    while (next < manifest.chunk_count) {
+      const index = next++;
+      await loadChunk(manifestUrl, manifest.chunks[index], index);
+    }
+  }
+  await Promise.all(Array.from({ length: workerCount }, worker));
+}
+
+function defaultDataset() { return { manifest: '/outputs/demo_loop/pseudo_gaussian_chunks/manifest.json', poses: '/outputs/demo_loop/camera_poses.npy' }; }
+function selectedDataset() {
+  const parameters = new URLSearchParams(location.search);
+  if (parameters.get('manifest')) return { manifest: parameters.get('manifest'), poses: parameters.get('poses') || '' };
+  return defaultDataset();
+}
+function navigateToDataset(manifest, poses) { const parameters=new URLSearchParams({manifest}); if(poses)parameters.set('poses',poses); location.search=parameters.toString(); }
+async function populateDatasetCatalog(selectedManifest) {
+  const select=document.getElementById('dataset');
+  try {
+    const response=await fetch('pseudo_gaussian_datasets.json',{cache:'no-store'});
+    if(!response.ok) throw new Error(`HTTP ${response.status}`);
+    const datasets=await response.json();
+    for(const dataset of datasets){
+      const option=document.createElement('option');
+      option.value=dataset.manifest;
+      option.textContent=dataset.name;
+      option.dataset.poses=dataset.poses||'';
+      select.append(option);
+    }
+  } catch(error) {
+    console.warn('Could not load dataset catalog:',error);
+  }
+  select.value=[...select.options].some(option=>option.value===selectedManifest)
+    ? selectedManifest
+    : 'custom';
+}
+async function initialize() {
+  const selected=selectedDataset();
+  await populateDatasetCatalog(selected.manifest);
+  document.getElementById('manifestInput').value=selected.manifest;
+  document.getElementById('poseInput').value=selected.poses;
+  const manifestUrl = new URL(selected.manifest, location.origin).href;
+  const poseUrl = new URL(selected.poses || '../camera_poses.npy', manifestUrl).href;
+  const response = await fetch(manifestUrl);
+  if (!response.ok) throw new Error(`Manifest failed: HTTP ${response.status}`);
+  const manifest = await response.json();
+  if (manifest.format !== 'abot-pseudo-gaussian-chunks' || manifest.version !== 1) {
+    throw new Error('不支持的 chunk manifest 版本');
+  }
+  state.pointCount = manifest.vertex_count;
+  state.bounds = manifest.bounds;
+  state.target = manifest.bounds.min.map((value, index) => (value + manifest.bounds.max[index]) / 2);
+  const span = Math.max(...manifest.bounds.min.map((value, index) => manifest.bounds.max[index] - value));
+  state.orbitDistance = Math.max(25, span * .55);
+  state.poses = await parseNpyPoses(poseUrl);
+  state.frame = 0;
+  document.getElementById('playbackProgress').max = '1';
+  document.getElementById('playbackProgress').value = '0';
+  document.getElementById('playbackProgressValue').value = '0%';
+
+  gl.disable(gl.DEPTH_TEST);
+  gl.depthMask(false);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  loading.hidden = true;
+  updateLoadingStatus();
+  requestAnimationFrame(render);
+  await loadChunks(manifestUrl, manifest);
+}
+
+function render(now) {
+  const width = Math.max(1, Math.round(canvas.clientWidth * devicePixelRatio));
+  const height = Math.max(1, Math.round(canvas.clientHeight * devicePixelRatio));
+  if (canvas.width !== width || canvas.height !== height) { canvas.width=width; canvas.height=height; }
+  gl.viewport(0,0,width,height);
+  gl.clear(gl.DEPTH_BUFFER_BIT);
+  if(state.skyBackground){gl.disable(gl.BLEND);gl.useProgram(skyProgram);gl.uniform2f(skyUniforms.resolution,width,height);gl.bindVertexArray(skyVao);gl.drawArrays(gl.TRIANGLES,0,3);}else{gl.clearColor(.031,.037,.048,1);gl.clear(gl.COLOR_BUFFER_BIT);}
+  gl.useProgram(program);
+  if(state.transparentBlending){gl.enable(gl.BLEND);gl.disable(gl.DEPTH_TEST);gl.depthMask(false);}
+  else{gl.disable(gl.BLEND);gl.enable(gl.DEPTH_TEST);gl.depthFunc(gl.LEQUAL);gl.depthMask(true);}
+  let view,cameraPosition;
+  if (state.mode === 'drive' && state.poses?.length) {
+    const pose = drivePose(state.poses[Math.floor(state.frame) % state.poses.length], state.backoff, state.cameraHeight, state.cameraYaw, state.cameraPitch);
+    view = invertMatrix(pose);cameraPosition=[pose[12],pose[13],pose[14]];
+  } else {
+    const cp=Math.cos(state.pitch), sp=Math.sin(state.pitch), cy=Math.cos(state.yaw), sy=Math.sin(state.yaw);
+    cameraPosition=[state.target[0]+state.orbitDistance*cp*sy,state.target[1]+state.orbitDistance*sp,state.target[2]+state.orbitDistance*cp*cy];
+    view=lookAt(cameraPosition,state.target,[0,1,0]);
+  }
+  const projection=perspective(state.fov,width/height,.1,3000,state.zoom);
+  gl.uniformMatrix4fv(uniforms.view,false,view);
+  gl.uniformMatrix4fv(uniforms.projection,false,projection);
+  gl.uniform1f(uniforms.viewportHeight,height);
+  gl.uniform1f(uniforms.splatScale,state.splatScale);
+  gl.uniform1f(uniforms.alphaScale,state.alphaScale);
+  gl.bindVertexArray(null);
+  const drawableChunks=[];
+  for(const chunk of state.chunks){
+    if(!chunk||!chunk.bounds)continue;
+    const center=[(chunk.bounds.min[0]+chunk.bounds.max[0])/2,(chunk.bounds.min[1]+chunk.bounds.max[1])/2,(chunk.bounds.min[2]+chunk.bounds.max[2])/2];
+    const dx=center[0]-cameraPosition[0],dy=center[1]-cameraPosition[1],dz=center[2]-cameraPosition[2];
+    chunk.distance=dx*dx+dy*dy+dz*dz;drawableChunks.push(chunk);
+  }
+  drawableChunks.sort((left,right)=>right.distance-left.distance);
+  for(const chunk of drawableChunks){gl.bindVertexArray(chunk.vao);gl.drawArrays(gl.POINTS,0,chunk.count);}
+  gl.bindVertexArray(null);
+  if (state.mode==='drive' && state.playing && state.lastTime) {
+    const dt=Math.min(.1,(now-state.lastTime)/1000);
+    state.frame=(state.frame+state.speed*dt)%Math.max(1,state.poses.length);
+    statusElement.textContent=`${state.pointCount.toLocaleString()} Gaussians · frame ${Math.floor(state.frame)+1}/${state.poses.length.toLocaleString()}`;
+  }
+  if (!state.progressDragging && state.poses?.length > 1) {
+    const progress=state.frame/(state.poses.length-1);
+    document.getElementById('playbackProgress').value=String(progress);
+    document.getElementById('playbackProgressValue').value=`${Math.round(progress*100)}%`;
+  }
+  state.lastTime=now;
+  requestAnimationFrame(render);
+}
+
+canvas.addEventListener('pointerdown',event=>{ state.drag={x:event.clientX,y:event.clientY,button:event.button}; canvas.setPointerCapture(event.pointerId); });
+canvas.addEventListener('pointermove',event=>{ if(!state.drag) return; const dx=event.clientX-state.drag.x,dy=event.clientY-state.drag.y; state.drag.x=event.clientX; state.drag.y=event.clientY;
+  if(state.mode==='drive') {
+    if(state.drag.button!==0) return;
+    state.cameraYaw=(state.cameraYaw+dx*.25+540)%360-180;
+    state.cameraPitch=Math.min(45,Math.max(-45,state.cameraPitch-dy*.18));
+    syncDriveCameraControls();
+    return;
+  }
+  if(state.drag.button===0){state.yaw+=dx*.005;state.pitch=Math.min(1.5,Math.max(-1.5,state.pitch+dy*.005));}
+  else if(state.drag.button===2){const scale=state.orbitDistance*.0015;state.target[0]-=dx*scale;state.target[2]-=dy*scale;}
+});
+canvas.addEventListener('pointerup',event=>{state.drag=null;canvas.releasePointerCapture(event.pointerId);});
+canvas.addEventListener('contextmenu',event=>event.preventDefault());
+canvas.addEventListener('wheel',event=>{ event.preventDefault();
+  if(state.mode==='drive') { state.zoom=Math.min(5,Math.max(.5,state.zoom*Math.exp(-event.deltaY*.001))); syncDriveCameraControls(); return; }
+  state.orbitDistance=Math.min(2000,Math.max(2,state.orbitDistance*Math.exp(event.deltaY*.001)));
+},{passive:false});
+const bindings=[['zoom','zoomValue',v=>v.toFixed(2)+'×'],['fov','fovValue',v=>v.toFixed(0)+'°'],['splatScale','splatScaleValue',v=>v.toFixed(2)],['alphaScale','alphaScaleValue',v=>v.toFixed(2)],['speed','speedValue',v=>v.toFixed(0)+' f/s'],['cameraHeight','cameraHeightValue',v=>v.toFixed(1)+' m'],['backoff','backoffValue',v=>v.toFixed(0)+' m'],['cameraYaw','cameraYawValue',v=>v.toFixed(0)+'°'],['cameraPitch','cameraPitchValue',v=>v.toFixed(0)+'°']];
+for(const [key,output,format] of bindings){ const input=document.getElementById(key),out=document.getElementById(output); input.addEventListener('input',()=>{state[key]=Number(input.value);out.value=format(state[key]);}); }
+function syncDriveCameraControls() {
+  for(const key of ['zoom','cameraYaw','cameraPitch']) {
+    const input=document.getElementById(key), output=document.getElementById(key+'Value');
+    input.value=String(state[key]);
+    output.value=key==='zoom' ? state[key].toFixed(2)+'×' : state[key].toFixed(0)+'°';
+  }
+}const orbitButton=document.getElementById('orbitButton'),driveButton=document.getElementById('driveButton'),pauseButton=document.getElementById('pauseButton');
+function setMode(mode){state.mode=mode;orbitButton.classList.toggle('active',mode==='orbit');driveButton.classList.toggle('active',mode==='drive');}
+function setPlaying(playing){state.playing=playing;pauseButton.textContent=playing?'暂停':'继续';pauseButton.classList.toggle('active',!playing);}
+orbitButton.addEventListener('click',()=>setMode('orbit'));
+driveButton.addEventListener('click',()=>{setMode('drive');setPlaying(true);});
+pauseButton.addEventListener('click',()=>setPlaying(!state.playing));
+window.addEventListener('keydown',event=>{if(event.code==='Space'&&state.mode==='drive'){event.preventDefault();setPlaying(!state.playing);}});
+document.getElementById('skyBackground').addEventListener('change',event=>{state.skyBackground=event.target.checked;});
+document.getElementById('transparentBlending').addEventListener('change',event=>{state.transparentBlending=event.target.checked;});
+const playbackProgress=document.getElementById('playbackProgress');
+function seekToProgress(value){
+  if(!state.poses?.length) return;
+  state.frame=Math.min(state.poses.length-1,Math.max(0,Number(value)*(state.poses.length-1)));
+  const progress=state.frame/Math.max(1,state.poses.length-1);
+  playbackProgress.value=String(progress);
+  document.getElementById('playbackProgressValue').value=`${Math.round(progress*100)}%`;
+  statusElement.textContent=`${state.pointCount.toLocaleString()} Gaussians · frame ${Math.floor(state.frame)+1}/${state.poses.length.toLocaleString()}`;
+}
+playbackProgress.addEventListener('pointerdown',()=>{state.progressDragging=true;});
+playbackProgress.addEventListener('pointerup',()=>{state.progressDragging=false;});
+playbackProgress.addEventListener('input',event=>seekToProgress(event.target.value));
+playbackProgress.addEventListener('change',()=>{state.progressDragging=false;});
+const datasetSelect=document.getElementById('dataset');
+datasetSelect.addEventListener('change',()=>{if(datasetSelect.value==='custom')return;const option=datasetSelect.selectedOptions[0];document.getElementById('manifestInput').value=datasetSelect.value;document.getElementById('poseInput').value=option.dataset.poses||'';});
+document.getElementById('loadDataset').addEventListener('click',()=>{const manifest=document.getElementById('manifestInput').value.trim();if(!manifest)return;const poses=document.getElementById('poseInput').value.trim()||new URL('../camera_poses.npy',new URL(manifest,location.origin)).pathname;navigateToDataset(manifest,poses);});
+initialize().catch(error=>{loading.textContent='加载失败：'+error.message;console.error(error);});
+</script>
+</body>
+</html>
