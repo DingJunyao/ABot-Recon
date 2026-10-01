@@ -51,8 +51,8 @@
   </fieldset>
   <button id="loadDataset" type="button">Load selected dataset</button>
   <fieldset class="row" aria-label="Camera mode">
-    <button id="orbitButton" class="active" type="button">Orbit</button>
-    <button id="driveButton" type="button" disabled>Drive</button>
+    <button id="orbitButton" class="active" type="button" aria-pressed="true">Orbit</button>
+    <button id="driveButton" type="button" aria-pressed="false" disabled>Drive</button>
   </fieldset>
   <fieldset class="row" aria-label="Playback">
     <button id="playPauseButton" type="button" disabled>Play</button>
@@ -86,7 +86,7 @@ const threeModuleUrls = [
 const state = {
   manifest: null, manifestUrl: null, chunkObjects: [], trajectory: null,
   trajectoryObjects: null, resampledTrajectory: null, pathDistances: null,
-  totalPathLength: 0, loadedPointCount: 0, expectedPointCount: 0,
+  totalPathLength: 0, loadedPointCount: 0,
   loadedChunkCount: 0, loadSequence: 0, activeLoadToken: 0, mode: 'orbit',
   playing: false, progress: 0, lastTimestamp: null, sceneRadius: 1,
 };
@@ -171,6 +171,7 @@ function initRenderer() {
   });
   pointMaterial.size = Number(elements.pointSize.value);
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'high-performance' });
+  if (THREE.LinearSRGBColorSpace) renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.setClearColor(0x07090c, 1);
   scene = new THREE.Scene();
@@ -307,37 +308,39 @@ function decodeFloatChunk(buffer, count) {
   }
   return { positions, colors };
 }
-async function loadChunk(chunk) {
+async function loadChunk(chunk, loadToken) {
   if (!Number.isInteger(chunk.count) || chunk.count < 0) throw new Error(`Point-cloud chunk "${chunk.file}" has an invalid count.`);
   const chunkUrl = resolveUrl(chunk.file, state.manifestUrl);
   let response;
   try { response = await fetch(chunkUrl, { cache: 'no-store' }); }
   catch (error) { throw new Error(`Could not load chunk "${chunk.file}": network request failed (${error.message}). Check the server and URL.`); }
+  if (state.activeLoadToken !== loadToken) return null;
   if (!response.ok) throw new Error(`Could not load chunk "${chunk.file}": HTTP ${response.status} ${response.statusText || '(no status text)'}.`);
   const buffer = await response.arrayBuffer();
-  const minimumBytes = chunk.count * state.manifest.stride;
+  if (state.activeLoadToken !== loadToken) return null;
+  const manifest = state.manifest;
+  const minimumBytes = chunk.count * manifest.stride;
   if (buffer.byteLength < minimumBytes) throw new Error(`Could not load chunk "${chunk.file}": expected at least ${minimumBytes} bytes for ${chunk.count} records, received ${buffer.byteLength}.`);
   let decoded;
   state.currentChunkFile = chunk.file;
-  if (state.manifest.position_encoding === 'uint16') decoded = decodeQuantizedChunk(buffer, chunk.count, state.manifest.bounds.min, state.manifest.bounds.max);
-  else if (state.manifest.position_encoding === 'float32') decoded = decodeFloatChunk(buffer, chunk.count);
-  else throw new Error(`Unsupported point-cloud chunk encoding: ${state.manifest.position_encoding}`);
-  if (state.activeLoadToken !== state.loadSequence) return null;
+  if (manifest.position_encoding === 'uint16') decoded = decodeQuantizedChunk(buffer, chunk.count, manifest.bounds.min, manifest.bounds.max);
+  else if (manifest.position_encoding === 'float32') decoded = decodeFloatChunk(buffer, chunk.count);
+  else throw new Error(`Unsupported point-cloud chunk encoding: ${manifest.position_encoding}`);
   addChunkObject(chunk, decoded.positions, decoded.colors);
   state.loadedPointCount += chunk.count;
   state.loadedChunkCount += 1;
   return decoded;
 }
-async function loadChunks(manifestUrl, manifest) {
+async function loadChunks(manifest, loadToken) {
   const total = manifest.chunks.length;
   for (let index = 0; index < total; index += 1) {
-    if (state.activeLoadToken !== state.loadSequence) return;
+    if (state.activeLoadToken !== loadToken) return;
     const chunk = manifest.chunks[index];
     setStatus(`Loading chunks ${index + 1}/${total} · ${state.loadedPointCount.toLocaleString()} points`);
-    await loadChunk(chunk);
-    if (state.activeLoadToken !== state.loadSequence) return;
+    await loadChunk(chunk, loadToken);
+    if (state.activeLoadToken !== loadToken) return;
   }
-  if (state.activeLoadToken !== state.loadSequence) return;
+  if (state.activeLoadToken !== loadToken) return;
   if (state.loadedPointCount !== manifest.point_count) throw new Error(`Manifest declared ${manifest.point_count.toLocaleString()} points, but chunks contained ${state.loadedPointCount.toLocaleString()}. Regenerate the point cloud.`);
   setStatus(`Ready · ${state.loadedPointCount.toLocaleString()} points in ${state.loadedChunkCount} chunks`);
 }
@@ -371,7 +374,7 @@ function resampleTrajectory(trajectory, sampleCount = 1024) {
   let segment = 1;
   for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
     const targetDistance = total * sampleIndex / (sampleCount - 1);
-    while (segment < distances.length - 2 && distances[segment] < targetDistance) segment += 1;
+    while (segment < distances.length - 1 && distances[segment] < targetDistance) segment += 1;
     const previousIndex = segment - 1;
     const segmentLength = distances[segment] - distances[previousIndex];
     const alpha = segmentLength === 0 ? 0 : (targetDistance - distances[previousIndex]) / segmentLength;
@@ -484,9 +487,14 @@ function setMode(mode) {
   state.mode = mode;
   elements.orbitButton.classList.toggle('active', mode === 'orbit');
   elements.driveButton.classList.toggle('active', mode === 'drive');
+  elements.orbitButton.setAttribute('aria-pressed', String(mode === 'orbit'));
+  elements.driveButton.setAttribute('aria-pressed', String(mode === 'drive'));
   elements.playPauseButton.disabled = mode !== 'drive';
   cameraController.enabled = mode === 'orbit';
-  if (mode === 'orbit') applyOrbit();
+  if (mode === 'orbit') {
+    setPlaying(false);
+    applyOrbit();
+  }
   else applyDriveCamera(state.progress);
 }
 function frameScene() {
@@ -584,6 +592,7 @@ async function loadScene() {
   setStatus('Initializing three.js…');
   try {
     await ensureThree();
+    if (state.activeLoadToken !== loadToken) return;
     initRenderer();
     clearScene();
     state.mode = 'orbit';
@@ -600,13 +609,14 @@ async function loadScene() {
     if (state.activeLoadToken !== loadToken) return;
     state.manifest = manifest;
     state.manifestUrl = manifestUrl;
-    state.expectedPointCount = manifest.point_count;
     let trajectoryUrl = null;
     if (elements.trajectoryInput.value.trim()) trajectoryUrl = resolveUrl(elements.trajectoryInput.value.trim());
     else if (elements.trajectoryInput.dataset.explicitEmpty !== 'true' && typeof manifest.trajectory === 'string' && manifest.trajectory) trajectoryUrl = resolveUrl(manifest.trajectory, manifestUrl);
     if (trajectoryUrl) {
       setStatus(`Loading trajectory "${trajectoryUrl.href}"…`);
-      state.trajectory = buildTrajectory(await fetchJson(trajectoryUrl, 'trajectory'));
+      const trajectoryPayload = await fetchJson(trajectoryUrl, 'trajectory');
+      if (state.activeLoadToken !== loadToken) return;
+      state.trajectory = buildTrajectory(trajectoryPayload);
       state.resampledTrajectory = resampleTrajectory(state.trajectory, 1024);
       state.pathDistances = [0];
       for (let index = 1; index < state.resampledTrajectory.length; index += 1) {
@@ -624,7 +634,7 @@ async function loadScene() {
     }
     setMode('orbit');
     setStatus(`Manifest ready · loading ${manifest.chunks.length.toLocaleString()} chunks…`);
-    await loadChunks(manifestUrl, manifest);
+    await loadChunks(manifest, loadToken);
   } catch (error) {
     if (state.activeLoadToken === loadToken) setStatus(error && error.message ? error.message : String(error), true);
   } finally {
@@ -736,7 +746,10 @@ function applyQueryParameters() {
     elements.manifestInput.value = manifest;
     if (datasetName && datasetName !== 'custom') {
       const option = Array.from(elements.dataset.options).find(item => item.value === datasetName);
-      if (option) elements.dataset.value = datasetName;
+      if (option) {
+        elements.dataset.value = datasetName;
+        if (typeof trajectory !== 'string') elements.trajectoryInput.value = option.dataset.trajectory || '';
+      }
       else setStatus(`Dataset "${datasetName}" is not in the catalog; loading the supplied custom manifest.`);
     }
     return true;
