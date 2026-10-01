@@ -51,6 +51,64 @@ def test_parse_rgb_ply_header_reads_vertex_layout_and_ignores_edges(tmp_path):
     assert rgb_ply_dtype(header.offsets).itemsize == 15
 
 
+def test_rgb_ply_handles_trailing_ignored_scalar_vertex_property(tmp_path):
+    path = tmp_path / "points-with-extra-property.ply"
+    vertex_dtype = np.dtype(
+        [
+            ("x", "<f4"),
+            ("y", "<f4"),
+            ("z", "<f4"),
+            ("red", "u1"),
+            ("green", "u1"),
+            ("blue", "u1"),
+            ("quality", "<u2"),
+        ]
+    )
+    vertices = np.array(
+        [
+            (0.0, 1.0, 2.0, 10, 20, 30, 111),
+            (3.0, 4.0, 5.0, 40, 50, 60, 222),
+        ],
+        dtype=vertex_dtype,
+    )
+    path.write_bytes(
+        b"ply\n"
+        b"format binary_little_endian 1.0\n"
+        b"element vertex 2\n"
+        b"property float x\n"
+        b"property float y\n"
+        b"property float z\n"
+        b"property uchar red\n"
+        b"property uchar green\n"
+        b"property uchar blue\n"
+        b"property ushort quality\n"
+        b"end_header\n" + vertices.tobytes()
+    )
+
+    header = parse_rgb_ply_header(path)
+
+    assert header.offsets == {
+        "x": 0,
+        "y": 4,
+        "z": 8,
+        "red": 12,
+        "green": 13,
+        "blue": 14,
+        "quality": 15,
+    }
+    assert header.stride == 17
+    assert rgb_ply_dtype(header.offsets).itemsize == 15
+
+    points, colors = read_rgb_ply(path, header)
+
+    assert np.array_equal(
+        points, np.column_stack([vertices["x"], vertices["y"], vertices["z"]])
+    )
+    assert np.array_equal(
+        colors, np.column_stack([vertices["red"], vertices["green"], vertices["blue"]])
+    )
+
+
 def test_read_rgb_ply_returns_points_and_colors_and_filters_nonfinite(tmp_path):
     path = tmp_path / "points.ply"
     points = np.array(
