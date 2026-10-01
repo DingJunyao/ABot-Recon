@@ -13,3 +13,6 @@ examples/images/
 *.so
 
 .playwright-mcp/
+.worktrees/
+
+.worktrees/
