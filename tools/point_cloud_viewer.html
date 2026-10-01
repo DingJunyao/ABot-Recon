@@ -76,6 +76,8 @@ const elementIds = [
   'orbitButton', 'driveButton', 'playPauseButton', 'resetButton',
   'trajectoryVisible', 'pointSize', 'playbackSpeed', 'playbackProgress',
   'cameraHeight', 'cameraBackoff', 'status',
+  'playbackProgressValue', 'playbackSpeedValue', 'pointSizeValue',
+  'cameraHeightValue', 'cameraBackoffValue',
 ];
 const elements = Object.fromEntries(elementIds.map(id => [id, document.getElementById(id)]));
 const canvas = document.getElementById('canvas');

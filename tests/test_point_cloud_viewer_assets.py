@@ -74,6 +74,33 @@ def test_viewer_declares_required_controls(viewer):
         assert f'id="{element_id}"' in viewer
 
 
+def test_viewer_element_ids_cover_every_elements_reference(viewer):
+    element_ids_match = re.search(
+        r"const elementIds = \[(.*?)\];",
+        viewer,
+        flags=re.DOTALL,
+    )
+    assert element_ids_match, "viewer does not declare an elementIds array"
+    element_ids = set(re.findall(r"'([^']+)'", element_ids_match.group(1)))
+
+    referenced_ids = set(
+        re.findall(r"\belements\.([A-Za-z_$][A-Za-z0-9_$]*)", viewer)
+    )
+    assert element_ids >= referenced_ids, (
+        "every elements.<id> reference must be collected by elementIds; "
+        f"missing: {sorted(referenced_ids - element_ids)}"
+    )
+
+    for output_id in (
+        "playbackProgressValue",
+        "playbackSpeedValue",
+        "pointSizeValue",
+        "cameraHeightValue",
+        "cameraBackoffValue",
+    ):
+        assert output_id in element_ids
+
+
 def test_viewer_decodes_both_chunk_encodings(viewer):
     assert "abot-point-cloud-chunks" in viewer
     assert "position_encoding" in viewer

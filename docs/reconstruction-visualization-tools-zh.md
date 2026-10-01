@@ -74,7 +74,7 @@ python scripts\view_reconstruction.py `
 http://127.0.0.1:8765/tools/point_cloud_viewer.html
 ```
 
-操作方式与 Open3D 一致：左键拖动旋转，右键或 Shift+左键平移，滚轮缩放。页面默认加载 `tools/point_cloud_datasets.json` 中的 `demo_loop · full RGB`；有轨迹时可用 Drive 模式沿相机路径播放、拖动进度条跳转，Reset 恢复自动取景。
+操作方式与 Open3D 一致：左键拖动旋转，右键或 Shift+左键平移，滚轮缩放。请在页面中选择 `demo_loop · full RGB`，然后点击 `Load selected dataset` 开始加载；有轨迹时可用 Drive 模式沿相机路径播放、拖动进度条跳转，Reset 恢复自动取景。
 
 编码与性能权衡：
 
