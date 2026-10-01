@@ -9,11 +9,14 @@ Splat 转换、大文件分块和网页查看的脚本与工作流。
 |---|---|
 | `scripts/export_reconstruction_ply.py` | 将 `local_points.pt`、`world_points.pt` 或 `colors.pt` 导出为 RGB PLY |
 | `scripts/view_reconstruction.py` | 使用 Open3D 查看 PLY，并沿相机轨迹播放 |
+| `scripts/export_point_cloud_chunks.py` | 将 RGB 点云转换为网页使用的硬点云分块与清单 |
 | `scripts/export_pseudo_gaussian_ply.py` | 将 RGB 点云转换为标准 3DGS 格式的伪 Gaussian PLY |
 | `scripts/export_pseudo_gaussian_chunks.py` | 将 3DGS PLY 或 RGB 点云转换为网页使用的紧凑分块 |
-| `scripts/serve_pseudo_gaussian_viewer.py` | 启动项目内伪高斯查看器的本地 HTTP 服务 |
-| `tools/pseudo_gaussian_viewer.html` | 项目内网页查看器 |
-| `tools/pseudo_gaussian_datasets.json` | 网页查看器的数据列表 |
+| `scripts/serve_pseudo_gaussian_viewer.py` | 启动项目内网页查看器的本地 HTTP 服务（同时服务硬点云与伪高斯页面） |
+| `tools/point_cloud_viewer.html` | 官方风格渐进式硬点云网页查看器 |
+| `tools/point_cloud_datasets.json` | 硬点云网页查看器的数据列表 |
+| `tools/pseudo_gaussian_viewer.html` | 项目内伪高斯网页查看器 |
+| `tools/pseudo_gaussian_datasets.json` | 伪高斯网页查看器的数据列表 |
 
 ## 推荐工作流
 
@@ -44,7 +47,45 @@ python scripts\view_reconstruction.py `
   --zoom 2.5
 ```
 
-### 2. 生成标准伪 Gaussian PLY
+### 2. 官方风格硬点云网页查看
+
+对于 `demo_loop` 这类大规模重建结果，优先使用硬点云网页查看器。它直接流式渲染原始 RGB 点，适合判断重建质量；伪高斯查看器只用于合成表面预览。
+
+先转换为硬点云分块：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\export_point_cloud_chunks.py `
+  --input outputs\demo_loop\reconstruction.ply `
+  --poses outputs\demo_loop\camera_poses.npy `
+  --output-dir outputs\demo_loop\point_cloud_chunks `
+  --chunk-size 250000 `
+  --max-points 0
+```
+
+然后启动仓库根目录的本地服务：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\serve_pseudo_gaussian_viewer.py --no-browser
+```
+
+打开：
+
+```text
+http://127.0.0.1:8765/tools/point_cloud_viewer.html
+```
+
+操作方式与 Open3D 一致：左键拖动旋转，右键或 Shift+左键平移，滚轮缩放。页面默认加载 `tools/point_cloud_datasets.json` 中的 `demo_loop · full RGB`；有轨迹时可用 Drive 模式沿相机路径播放、拖动进度条跳转，Reset 恢复自动取景。
+
+编码与性能权衡：
+
+- 硬点云直接展示原始重建点，适合判断重建质量；
+- 伪高斯查看器只渲染合成的表面预览，不代表原始重建点；
+- 默认 `uint16` 编码每条记录 10 字节，体积更小，通常视觉上与原坐标一致；
+- `--position-encoding float32` 每条记录 16 字节，精确保留源 PLY 坐标；
+- `--max-points` 可生成更轻量的目录，适合快速预览；
+- 不传 `--poses` 时没有轨迹，仅支持轨道查看。
+
+### 3. 生成标准伪 Gaussian PLY
 
 ```powershell
 python scripts\export_pseudo_gaussian_ply.py `
@@ -56,7 +97,7 @@ python scripts\export_pseudo_gaussian_ply.py `
   --opacity 0.85
 ```
 
-### 3. 生成网页分块
+### 4. 生成伪高斯网页分块
 
 从标准 3DGS PLY 生成：
 
@@ -79,7 +120,7 @@ python scripts\export_pseudo_gaussian_chunks.py `
   --flip-y
 ```
 
-### 4. 启动项目内网页查看器
+### 5. 启动伪高斯网页查看器
 
 ```powershell
 python scripts\serve_pseudo_gaussian_viewer.py
@@ -387,7 +428,23 @@ tools/pseudo_gaussian_datasets.json
 
 ## 当前推荐数据
 
-### 精确 RGB 全量版本
+### 官方风格硬点云全量版本
+
+```text
+outputs/demo_loop/point_cloud_chunks
+```
+
+特征：
+
+```text
+25,596,210 points
+约 256 MB compact data
+uint16 坐标 + 原始 RGB
+```
+
+这是优先用于判断重建质量的网页版本，直接显示原始 RGB 点，不引入合成 Gaussian 表面。
+
+### 伪高斯精确 RGB 全量版本
 
 ```text
 outputs/demo_loop/pseudo_gaussian_rgb_chunks
@@ -487,7 +544,7 @@ WebGL 的 `-Z` forward 差异。
 相关测试：
 
 ```powershell
-python -m pytest tests\test_view_reconstruction.py tests\test_pseudo_gaussian_ply.py tests\test_pseudo_gaussian_chunks.py tests\test_serve_pseudo_gaussian_viewer.py -q
+python -m pytest tests\test_view_reconstruction.py tests\test_pseudo_gaussian_ply.py tests\test_pseudo_gaussian_chunks.py tests\test_export_point_cloud_chunks.py tests\test_point_cloud_viewer_assets.py tests\test_serve_pseudo_gaussian_viewer.py -q
 ```
 
 代码检查：

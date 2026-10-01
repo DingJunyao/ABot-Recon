@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Do not add a Python runtime dependency; converter code may use only Python stdlib and NumPy.
-- Default compact encoding is exactly 8 bytes per point: three little-endian `uint16` coordinates plus one packed `uint32` RGBA color.
+- Default compact encoding is exactly 10 bytes per point: three little-endian `uint16` coordinates plus one packed `uint32` RGBA color.
 - Optional `float32` encoding is exactly 16 bytes per point.
 - Preserve original ABot-Recon world coordinates; do not flip Y/Z in the new point-cloud viewer.
 - Default `--max-points 0` means retain every finite point.
@@ -384,7 +384,7 @@ def test_compact_dtypes_have_exact_layouts():
     quantized = compact_dtype("uint16")
     exact = compact_dtype("float32")
 
-    assert quantized.itemsize == 8
+    assert quantized.itemsize == 10
     assert quantized.names == ("position", "color")
     assert quantized["position"].base == np.dtype("<u2")
     assert quantized["position"].shape == (3,)
@@ -428,7 +428,7 @@ def test_export_chunks_uses_quantized_records_manifest_and_trajectory(tmp_path):
     assert manifest["chunk_count"] == 2
     assert manifest["chunk_size"] == 3
     assert manifest["position_encoding"] == "uint16"
-    assert manifest["stride"] == 8
+    assert manifest["stride"] == 10
     assert manifest["bounds"]["min"] == [0.0, 0.0, 0.0]
     assert manifest["bounds"]["max"] == [32767.0, 8.0, 7.5]
     assert manifest["chunks"][0]["count"] == 3
@@ -456,7 +456,7 @@ def test_export_chunks_uses_quantized_records_manifest_and_trajectory(tmp_path):
     assert trajectory["positions"] == [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]
 
 
-def test_export_chunks_supports_float32_and_point_budget(tmp_path):
+def test_export_chunks_supports_float32_and_endpoint_inclusive_point_budget(tmp_path):
     input_path = tmp_path / "points.ply"
     output_dir = tmp_path / "chunks"
     points = np.arange(12, dtype=np.float32).reshape(4, 3)
@@ -474,7 +474,7 @@ def test_export_chunks_supports_float32_and_point_budget(tmp_path):
     assert manifest["point_count"] == 2
     assert manifest["stride"] == 16
     records = np.fromfile(output_dir / "chunk-00000.pbin", dtype=compact_dtype("float32"))
-    assert np.array_equal(records["position"], points[[0, 2]])
+    assert np.array_equal(records["position"], points[[0, 3]])
     assert np.all(records["color"] == 0xFF070809)
 
 
@@ -832,7 +832,7 @@ Expected: all pass.
 
 - [ ] **Step 3: Convert demo_loop chunks**
 
-Run the exact command from Task 5 Step 1. This may write approximately 205 MB under ignored `outputs/demo_loop/point_cloud_chunks`.
+Run the exact command from Task 5 Step 1. This may write approximately 256 MB under ignored `outputs/demo_loop/point_cloud_chunks`.
 
 Expected output includes:
 

@@ -92,7 +92,7 @@ Unsupported properties may be present and are ignored.
 
 ### Chunk Encoding
 
-Each vertex uses 8 bytes in the default `uint16` mode:
+Each vertex uses 10 bytes in the default `uint16` mode:
 
 ```text
 x: uint16
@@ -120,7 +120,7 @@ This preserves the source PLY coordinates exactly but uses 16 bytes per point.
 
 ### Point Budget
 
-When `--max-points` is greater than zero and the source has more finite points, the converter selects evenly spaced indices over the complete point sequence. This mirrors the existing reconstruction exporter and avoids taking only the beginning of a long route.
+When `--max-points` is greater than zero and the source has more finite points, the converter selects evenly spaced indices (including both ends) over the complete point sequence. This mirrors the existing reconstruction exporter and avoids taking only the beginning of a long route.
 
 ### Manifest
 
@@ -134,7 +134,7 @@ Example logical schema:
   "chunk_count": 103,
   "chunk_size": 250000,
   "position_encoding": "uint16",
-  "stride": 8,
+  "stride": 10,
   "bounds": {
     "min": [0.0, 0.0, 0.0],
     "max": [100.0, 20.0, 100.0]
@@ -292,7 +292,7 @@ Use a small synthetic chunk set for functional checks, then `demo_loop` for scal
 
 For the current 25,596,210-point `demo_loop` result:
 
-- default wire size: about 205 MB;
+- default wire size: about 256 MB;
 - 103 chunks at 250,000 points;
 - approximately 103 draw calls once fully loaded;
 - no alpha sorting cost;
