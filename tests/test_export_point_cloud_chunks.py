@@ -2,10 +2,13 @@ import numpy as np
 import pytest
 
 from scripts.export_point_cloud_chunks import (
+    build_trajectory,
+    load_camera_poses,
     parse_rgb_ply_header,
     point_budget_indices,
     read_rgb_ply,
     rgb_ply_dtype,
+    robust_bounds,
 )
 
 
@@ -169,6 +172,18 @@ def test_robust_bounds_uses_median_center_and_high_distance_percentile():
     assert 47.0 <= result["radius"] <= 50.0
 
 
+@pytest.mark.parametrize(
+    "points",
+    [
+        np.empty((0, 3), dtype=np.float64),
+        np.array([[np.nan, 0.0, 0.0], [np.inf, 1.0, 1.0]]),
+    ],
+)
+def test_robust_bounds_rejects_input_without_finite_xyz_points(points):
+    with pytest.raises(ValueError, match="No finite XYZ points for robust bounds"):
+        robust_bounds(points)
+
+
 def test_load_camera_poses_validates_shape_and_finite_values(tmp_path):
     poses = np.repeat(np.eye(4, dtype=np.float32)[None, :, :], 3, axis=0)
     poses[:, :3, 3] = [[0, 0, 0], [1, 0, 0], [2, 0, 0]]
@@ -183,6 +198,22 @@ def test_load_camera_poses_validates_shape_and_finite_values(tmp_path):
     np.save(bad_path, bad)
     with pytest.raises(ValueError, match="finite"):
         load_camera_poses(bad_path)
+
+
+def test_build_trajectory_converts_integer_positions_to_json_safe_floats():
+    poses = np.zeros((2, 4, 4), dtype=np.int64)
+    poses[:, 3, 3] = 1
+    poses[:, :3, 3] = [[0, 0, 0], [2, 0, 0]]
+    poses[:, :3, 2] = [0, 2, 0]
+
+    result = build_trajectory(poses)
+
+    assert all(
+        isinstance(value, float)
+        for position in result["positions"]
+        for value in position
+    )
+    assert result["positions"] == [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]
 
 
 def test_build_trajectory_returns_centers_and_normalized_optical_forwards():

@@ -1,9 +1,10 @@
-﻿"""Convert an RGB reconstruction PLY into compact streamed point chunks."""
+"""Convert an RGB reconstruction PLY into compact streamed point chunks."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -201,9 +202,11 @@ def read_rgb_ply(
 def robust_bounds(points: np.ndarray, sample_limit: int = 20000) -> dict[str, list[float]]:
     """Return outlier-resistant framing bounds for an XYZ point array."""
     points = np.asarray(points)
-    finite_points = points[np.isfinite(points).all(axis=1)]
-    if finite_points.shape[1:] != (3,):
+    if points.ndim != 2 or points.shape[1] != 3:
         raise ValueError("points must have XYZ columns")
+    finite_points = points[np.isfinite(points).all(axis=1)]
+    if len(finite_points) == 0:
+        raise ValueError("No finite XYZ points for robust bounds")
 
     if len(finite_points) > sample_limit:
         indices = np.linspace(
@@ -250,7 +253,7 @@ def build_trajectory(poses: np.ndarray) -> dict[str, Any]:
         "format": "abot-point-cloud-trajectory",
         "version": 1,
         "coordinate_system": "original ABot-Recon world coordinates",
-        "positions": centers[valid].tolist(),
+        "positions": centers[valid].astype(float, copy=False).tolist(),
         "forwards": (forwards[valid] / lengths[valid, None]).tolist(),
     }
 
