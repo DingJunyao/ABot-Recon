@@ -1,0 +1,763 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ABot-Recon Progressive Point-Cloud Viewer</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { color-scheme: dark; font-family: Inter, "Segoe UI", system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #07090c; color: #edf1f7; }
+  canvas#canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
+  .panel { position: fixed; top: 14px; left: 14px; z-index: 2; display: grid; gap: 9px; width: 328px; max-height: calc(100vh - 28px); overflow-y: auto; padding: 14px; border: 1px solid rgba(255,255,255,.13); border-radius: 12px; background: rgba(9,12,17,.88); box-shadow: 0 14px 40px rgba(0,0,0,.38); backdrop-filter: blur(12px); }
+  h1 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: .01em; }
+  .subtitle { margin: 0; color: #93a1b3; font-size: 11px; line-height: 1.45; }
+  fieldset { display: grid; gap: 8px; margin: 0; padding: 0; border: 0; }
+  label { display: grid; gap: 4px; color: #aeb9c7; font-size: 11px; font-weight: 550; }
+  select, input[type="url"] { width: 100%; min-width: 0; padding: 7px 8px; border: 1px solid rgba(255,255,255,.14); border-radius: 7px; background: #101722; color: #edf1f7; font: inherit; font-size: 11px; }
+  input[type="url"] { font-family: ui-monospace, Consolas, monospace; }
+  select:focus-visible, input:focus-visible, button:focus-visible { outline: 2px solid #67b7ff; outline-offset: 2px; }
+  .row { display: flex; gap: 6px; }
+  button { flex: 1 1 0; min-height: 31px; padding: 6px 8px; border: 0; border-radius: 7px; background: #243044; color: #edf1f7; font: inherit; font-size: 11px; font-weight: 600; cursor: pointer; }
+  button:hover:not(:disabled) { background: #32435d; }
+  button:disabled { opacity: .38; cursor: not-allowed; }
+  button.active { background: #64b5ff; color: #071019; }
+  .sliders { display: grid; gap: 7px; }
+  .slider-row { display: grid; grid-template-columns: 86px 1fr 52px; align-items: center; gap: 7px; }
+  .slider-row label { margin: 0; }
+  .slider-row output { color: #dce5f1; font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; }
+  input[type="range"] { width: 100%; margin: 0; accent-color: #64b5ff; }
+  .check-row { display: flex; align-items: center; gap: 7px; color: #aeb9c7; font-size: 11px; font-weight: 550; }
+  .check-row input { width: 15px; height: 15px; accent-color: #64b5ff; }
+  .status { min-height: 34px; padding: 8px; border-top: 1px solid rgba(255,255,255,.1); color: #a8b5c4; font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+  .status.error { color: #ff9c93; }
+  .hint { position: fixed; right: 14px; bottom: 12px; z-index: 1; color: #77828f; font-size: 11px; line-height: 1.55; text-align: right; pointer-events: none; }
+  @media (max-width: 680px) { .panel { width: calc(100vw - 24px); max-height: calc(100vh - 72px); } .hint { display: none; } }
+</style>
+</head>
+<body>
+<canvas id="canvas" aria-label="RGB point-cloud viewport"></canvas>
+<section class="panel" aria-label="Point-cloud viewer controls">
+  <h1>Progressive RGB Points</h1>
+  <p class="subtitle">Streams <code>abot-point-cloud-chunks</code> v1 and renders opaque circular points with depth sorting.</p>
+  <fieldset>
+    <label for="dataset">Dataset</label>
+    <select id="dataset"><option value="custom" selected>Custom manifest…</option></select>
+    <label for="manifestInput">Manifest URL</label>
+    <input id="manifestInput" type="url" spellcheck="false" placeholder="/outputs/demo_loop/point_cloud_chunks/manifest.json">
+    <label for="trajectoryInput">Trajectory URL (optional)</label>
+    <input id="trajectoryInput" type="url" spellcheck="false" placeholder="/outputs/demo_loop/point_cloud_chunks/trajectory.json">
+  </fieldset>
+  <button id="loadDataset" type="button">Load selected dataset</button>
+  <fieldset class="row" aria-label="Camera mode">
+    <button id="orbitButton" class="active" type="button">Orbit</button>
+    <button id="driveButton" type="button" disabled>Drive</button>
+  </fieldset>
+  <fieldset class="row" aria-label="Playback">
+    <button id="playPauseButton" type="button" disabled>Play</button>
+    <button id="resetButton" type="button">Reset</button>
+  </fieldset>
+  <fieldset class="sliders">
+    <div class="slider-row"><label for="playbackProgress">Progress</label><input id="playbackProgress" type="range" min="0" max="1" step="0.0001" value="0"><output id="playbackProgressValue" for="playbackProgress">0%</output></div>
+    <div class="slider-row"><label for="playbackSpeed">Speed</label><input id="playbackSpeed" type="range" min="0.02" max="1" step="0.01" value="0.18"><output id="playbackSpeedValue" for="playbackSpeed">0.18×</output></div>
+    <div class="slider-row"><label for="pointSize">Point size</label><input id="pointSize" type="range" min="0.01" max="1" step="0.005" value="0.08"><output id="pointSizeValue" for="pointSize">0.080</output></div>
+    <div class="slider-row"><label for="cameraHeight">Camera lift</label><input id="cameraHeight" type="range" min="-20" max="80" step="0.25" value="1.5"><output id="cameraHeightValue" for="cameraHeight">1.50 m</output></div>
+    <div class="slider-row"><label for="cameraBackoff">Backoff</label><input id="cameraBackoff" type="range" min="0" max="40" step="0.25" value="4"><output id="cameraBackoffValue" for="cameraBackoff">4.00 m</output></div>
+  </fieldset>
+  <label class="check-row" for="trajectoryVisible"><input id="trajectoryVisible" type="checkbox" checked> Show trajectory, markers, and current camera</label>
+  <div id="status" class="status" role="status" aria-live="polite">Choose a dataset or provide a manifest URL.</div>
+</section>
+<div class="hint">Left drag · orbit<br>Right or Shift+left drag · pan<br>Wheel · zoom</div>
+<script type="module">
+'use strict';
+const elementIds = [
+  'dataset', 'manifestInput', 'trajectoryInput', 'loadDataset',
+  'orbitButton', 'driveButton', 'playPauseButton', 'resetButton',
+  'trajectoryVisible', 'pointSize', 'playbackSpeed', 'playbackProgress',
+  'cameraHeight', 'cameraBackoff', 'status',
+];
+const elements = Object.fromEntries(elementIds.map(id => [id, document.getElementById(id)]));
+const canvas = document.getElementById('canvas');
+const threeModuleUrls = [
+  'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js',
+  'https://unpkg.com/three@0.170.0/build/three.module.min.js',
+];
+const state = {
+  manifest: null, manifestUrl: null, chunkObjects: [], trajectory: null,
+  trajectoryObjects: null, resampledTrajectory: null, pathDistances: null,
+  totalPathLength: 0, loadedPointCount: 0, expectedPointCount: 0,
+  loadedChunkCount: 0, loadSequence: 0, activeLoadToken: 0, mode: 'orbit',
+  playing: false, progress: 0, lastTimestamp: null, sceneRadius: 1,
+};
+let THREE = null;
+let renderer = null;
+let scene = null;
+let camera = null;
+let pointGroup = null;
+let trajectoryGroup = null;
+let pointMaterial = null;
+let circleTexture = null;
+let rendererInitialized = false;
+const cameraController = { enabled: false, azimuth: .72, polar: 1.24, radius: 10, target: null, pointer: null };
+
+function numberOrError(value, label) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw new Error(`${label} must be finite`);
+  return number;
+}
+function finiteVector3(value, label) {
+  if (!Array.isArray(value) || value.length !== 3) throw new Error(`${label} must contain three numbers`);
+  return value.map((coordinate, index) => numberOrError(coordinate, `${label}[${index}]`));
+}
+function setStatus(message, isError = false) {
+  elements.status.textContent = message;
+  elements.status.classList.toggle('error', Boolean(isError));
+}
+function resolveUrl(value, baseUrl = window.location.href) {
+  try { return new URL(value, baseUrl); }
+  catch (error) { throw new Error(`Invalid URL "${value}": ${error.message}`); }
+}
+async function fetchJson(url, label) {
+  const requestUrl = resolveUrl(url);
+  let response;
+  try { response = await fetch(requestUrl, { cache: 'no-store' }); }
+  catch (error) { throw new Error(`Could not load ${label} "${requestUrl.href}": network request failed (${error.message}). Check the server and URL.`); }
+  if (!response.ok) throw new Error(`Could not load ${label} "${requestUrl.href}": HTTP ${response.status} ${response.statusText || '(no status text)'}.`);
+  try { return await response.json(); }
+  catch (error) { throw new Error(`Could not parse ${label} "${requestUrl.href}" as JSON: ${error.message}.`); }
+}
+async function ensureThree() {
+  if (THREE) return THREE;
+  const failures = [];
+  for (const moduleUrl of threeModuleUrls) {
+    try {
+      const module = await import(moduleUrl);
+      if (!module.Scene || !module.WebGLRenderer || !module.PointsMaterial) throw new Error('module lacks required three.js exports');
+      THREE = module;
+      return THREE;
+    } catch (error) { failures.push(`${new URL(moduleUrl, window.location.href).host}: ${error.message}`); }
+  }
+  throw new Error(`Could not initialize three.js from CDN (${failures.join('; ')}). Check network access, or serve this page while connected to jsdelivr/unpkg.`);
+}
+function makeCircleSprite() {
+  const size = 64;
+  const spriteCanvas = document.createElement('canvas');
+  spriteCanvas.width = size;
+  spriteCanvas.height = size;
+  const context = spriteCanvas.getContext('2d');
+  if (!context) throw new Error('Could not create the point sprite: Canvas 2D is unavailable.');
+  context.clearRect(0, 0, size, size);
+  context.beginPath();
+  context.arc(size / 2, size / 2, size / 2 - 1, 0, Math.PI * 2);
+  context.closePath();
+  context.fillStyle = '#ffffff';
+  context.fill();
+  const texture = new THREE.CanvasTexture(spriteCanvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.generateMipmaps = true;
+  texture.needsUpdate = true;
+  return texture;
+}
+function initRenderer() {
+  if (rendererInitialized) return;
+  circleTexture = makeCircleSprite();
+  pointMaterial = new THREE.PointsMaterial({
+    color: 0xffffff, map: circleTexture, vertexColors: true,
+    sizeAttenuation: true, transparent: false, alphaTest: 0.5,
+    depthTest: true, depthWrite: true, blending: THREE.NoBlending,
+  });
+  pointMaterial.size = Number(elements.pointSize.value);
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setClearColor(0x07090c, 1);
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera(50, 1, .1, 1000);
+  camera.up.set(0, -1, 0);
+  pointGroup = new THREE.Group();
+  trajectoryGroup = new THREE.Group();
+  scene.add(pointGroup, trajectoryGroup);
+  cameraController.target = new THREE.Vector3();
+  rendererInitialized = true;
+  resize();
+  window.addEventListener('resize', resize);
+  canvas.addEventListener('contextmenu', event => event.preventDefault());
+  canvas.addEventListener('pointerdown', event => {
+    if (!cameraController.enabled || (event.button !== 0 && event.button !== 2)) return;
+    cameraController.pointer = { id: event.pointerId, button: event.button, shiftKey: event.shiftKey, x: event.clientX, y: event.clientY };
+    canvas.setPointerCapture(event.pointerId);
+  });
+  canvas.addEventListener('pointermove', event => {
+    const pointer = cameraController.pointer;
+    if (!pointer || pointer.id !== event.pointerId) return;
+    const deltaX = event.clientX - pointer.x;
+    const deltaY = event.clientY - pointer.y;
+    pointer.x = event.clientX; pointer.y = event.clientY; pointer.shiftKey = event.shiftKey;
+    if (pointer.button === 2 || pointer.shiftKey) panCamera(deltaX, deltaY);
+    else orbitCamera(deltaX, deltaY);
+  });
+  const releasePointer = event => {
+    if (cameraController.pointer?.id !== event.pointerId) return;
+    cameraController.pointer = null;
+    if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+  };
+  canvas.addEventListener('pointerup', releasePointer);
+  canvas.addEventListener('pointercancel', releasePointer);
+  canvas.addEventListener('wheel', event => {
+    if (!cameraController.enabled) return;
+    event.preventDefault();
+    const factor = Math.exp(Math.sign(event.deltaY) * Math.min(Math.abs(event.deltaY) / 650, .22));
+    cameraController.radius = Math.min(Math.max(cameraController.radius * factor, Math.max(state.sceneRadius * .002, .001)), state.sceneRadius * 25);
+    applyOrbit();
+  }, { passive: false });
+  requestAnimationFrame(render);
+}
+function resize() {
+  if (!renderer || !camera) return;
+  const width = Math.max(1, canvas.clientWidth || window.innerWidth);
+  const height = Math.max(1, canvas.clientHeight || window.innerHeight);
+  camera.aspect = width / height;
+  camera.updateProjectionMatrix();
+  renderer.setSize(width, height, false);
+}
+function orbitCamera(deltaX, deltaY) {
+  const scale = .0055;
+  cameraController.azimuth -= deltaX * scale;
+  cameraController.polar = Math.min(Math.PI - .035, Math.max(.035, cameraController.polar - deltaY * scale));
+  applyOrbit();
+}
+function panCamera(deltaX, deltaY) {
+  const forward = new THREE.Vector3();
+  camera.getWorldDirection(forward);
+  const right = new THREE.Vector3().crossVectors(forward, camera.up).normalize();
+  const screenUp = new THREE.Vector3().crossVectors(right, forward).normalize();
+  const speed = cameraController.radius * .0016;
+  cameraController.target.addScaledVector(right, -deltaX * speed);
+  cameraController.target.addScaledVector(screenUp, deltaY * speed);
+  applyOrbit();
+}
+function updatePointSize() {
+  const size = Number(elements.pointSize.value);
+  elements.pointSizeValue.textContent = size.toFixed(3);
+  if (pointMaterial) pointMaterial.size = size;
+}
+function addChunkObject(chunk, positions, colors) {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3, true));
+  geometry.computeBoundingSphere();
+  const points = new THREE.Points(geometry, pointMaterial);
+  points.frustumCulled = true;
+  points.name = chunk.file;
+  pointGroup.add(points);
+  state.chunkObjects.push(points);
+  return points;
+}
+function expectedStride(encoding) {
+  if (encoding === 'uint16') return 10;
+  if (encoding === 'float32') return 16;
+  throw new Error(`Unsupported point-cloud chunk encoding: ${encoding}`);
+}
+function decodeQuantizedChunk(buffer, count, boundsMin, boundsMax) {
+  const stride = state.manifest.stride;
+  const positions = new Float32Array(count * 3);
+  const colors = new Uint8Array(count * 3);
+  const view = new DataView(buffer);
+  const quantized = new Uint16Array(count * 3);
+  const ranges = [0, 1, 2].map(axis => Math.max(boundsMax[axis] - boundsMin[axis], Number.EPSILON));
+  for (let index = 0; index < count; index += 1) {
+    const input = index * stride;
+    const output = index * 3;
+    quantized[output] = Math.min(65535, Math.max(0, view.getUint16(input, true)));
+    quantized[output + 1] = Math.min(65535, Math.max(0, view.getUint16(input + 2, true)));
+    quantized[output + 2] = Math.min(65535, Math.max(0, view.getUint16(input + 4, true)));
+    const x = quantized[output];
+    const y = quantized[output + 1];
+    const z = quantized[output + 2];
+    positions[output] = boundsMin[0] + (x / 65535) * ranges[0];
+    positions[output + 1] = boundsMin[1] + (y / 65535) * ranges[1];
+    positions[output + 2] = boundsMin[2] + (z / 65535) * ranges[2];
+    const packedColor = view.getUint32(input + 6, true);
+    colors[output] = packedColor & 0xff;
+    colors[output + 1] = (packedColor >>> 8) & 0xff;
+    colors[output + 2] = (packedColor >>> 16) & 0xff;
+  }
+  return { positions, colors };
+}
+function decodeFloatChunk(buffer, count) {
+  const stride = state.manifest.stride;
+  const positions = new Float32Array(count * 3);
+  const colors = new Uint8Array(count * 3);
+  const view = new DataView(buffer);
+  for (let index = 0; index < count; index += 1) {
+    const input = index * stride;
+    const output = index * 3;
+    positions[output] = view.getFloat32(input, true);
+    positions[output + 1] = view.getFloat32(input + 4, true);
+    positions[output + 2] = view.getFloat32(input + 8, true);
+    if (!Number.isFinite(positions[output]) || !Number.isFinite(positions[output + 1]) || !Number.isFinite(positions[output + 2])) {
+      throw new Error(`Point-cloud chunk "${state.currentChunkFile}" contains a non-finite float32 XYZ record.`);
+    }
+    const packedColor = view.getUint32(input + 12, true);
+    colors[output] = packedColor & 0xff;
+    colors[output + 1] = (packedColor >>> 8) & 0xff;
+    colors[output + 2] = (packedColor >>> 16) & 0xff;
+  }
+  return { positions, colors };
+}
+async function loadChunk(chunk) {
+  if (!Number.isInteger(chunk.count) || chunk.count < 0) throw new Error(`Point-cloud chunk "${chunk.file}" has an invalid count.`);
+  const chunkUrl = resolveUrl(chunk.file, state.manifestUrl);
+  let response;
+  try { response = await fetch(chunkUrl, { cache: 'no-store' }); }
+  catch (error) { throw new Error(`Could not load chunk "${chunk.file}": network request failed (${error.message}). Check the server and URL.`); }
+  if (!response.ok) throw new Error(`Could not load chunk "${chunk.file}": HTTP ${response.status} ${response.statusText || '(no status text)'}.`);
+  const buffer = await response.arrayBuffer();
+  const minimumBytes = chunk.count * state.manifest.stride;
+  if (buffer.byteLength < minimumBytes) throw new Error(`Could not load chunk "${chunk.file}": expected at least ${minimumBytes} bytes for ${chunk.count} records, received ${buffer.byteLength}.`);
+  let decoded;
+  state.currentChunkFile = chunk.file;
+  if (state.manifest.position_encoding === 'uint16') decoded = decodeQuantizedChunk(buffer, chunk.count, state.manifest.bounds.min, state.manifest.bounds.max);
+  else if (state.manifest.position_encoding === 'float32') decoded = decodeFloatChunk(buffer, chunk.count);
+  else throw new Error(`Unsupported point-cloud chunk encoding: ${state.manifest.position_encoding}`);
+  if (state.activeLoadToken !== state.loadSequence) return null;
+  addChunkObject(chunk, decoded.positions, decoded.colors);
+  state.loadedPointCount += chunk.count;
+  state.loadedChunkCount += 1;
+  return decoded;
+}
+async function loadChunks(manifestUrl, manifest) {
+  const total = manifest.chunks.length;
+  for (let index = 0; index < total; index += 1) {
+    if (state.activeLoadToken !== state.loadSequence) return;
+    const chunk = manifest.chunks[index];
+    setStatus(`Loading chunks ${index + 1}/${total} · ${state.loadedPointCount.toLocaleString()} points`);
+    await loadChunk(chunk);
+    if (state.activeLoadToken !== state.loadSequence) return;
+  }
+  if (state.activeLoadToken !== state.loadSequence) return;
+  if (state.loadedPointCount !== manifest.point_count) throw new Error(`Manifest declared ${manifest.point_count.toLocaleString()} points, but chunks contained ${state.loadedPointCount.toLocaleString()}. Regenerate the point cloud.`);
+  setStatus(`Ready · ${state.loadedPointCount.toLocaleString()} points in ${state.loadedChunkCount} chunks`);
+}
+function buildTrajectory(payload) {
+  if (!payload || typeof payload !== 'object') throw new Error('Trajectory payload must be a JSON object.');
+  if (payload.format !== 'abot-point-cloud-trajectory' || payload.version !== 1) throw new Error('Unsupported trajectory format: expected abot-point-cloud-trajectory v1.');
+  if (!Array.isArray(payload.positions) || payload.positions.length === 0) throw new Error('Trajectory payload has no positions.');
+  if (!Array.isArray(payload.forwards) || payload.forwards.length !== payload.positions.length) throw new Error('Trajectory positions and forwards must be parallel, non-empty arrays.');
+  const positions = payload.positions.map((value, index) => finiteVector3(value, `trajectory position ${index}`));
+  const forwards = payload.forwards.map((value, index) => {
+    const forward = finiteVector3(value, `trajectory forward ${index}`);
+    const length = Math.hypot(forward[0], forward[1], forward[2]);
+    if (length <= 0) throw new Error(`Trajectory forward ${index} has zero length.`);
+    return forward.map(component => component / length);
+  });
+  return { positions, forwards };
+}
+function resampleTrajectory(trajectory, sampleCount = 1024) {
+  if (!Number.isInteger(sampleCount) || sampleCount < 2) throw new Error('Trajectory sample count must be an integer of at least 2.');
+  if (trajectory.positions.length === 1) return Array.from({ length: sampleCount }, () => ({ position: trajectory.positions[0].slice(), forward: trajectory.forwards[0].slice() }));
+  const distances = [0];
+  for (let index = 1; index < trajectory.positions.length; index += 1) {
+    const previous = trajectory.positions[index - 1];
+    const current = trajectory.positions[index];
+    distances.push(distances[index - 1] + Math.hypot(current[0] - previous[0], current[1] - previous[1], current[2] - previous[2]));
+  }
+  const total = distances[distances.length - 1];
+  if (!Number.isFinite(total)) throw new Error('Trajectory path contains non-finite cumulative distances.');
+  if (total === 0) return Array.from({ length: sampleCount }, () => ({ position: trajectory.positions[0].slice(), forward: trajectory.forwards[0].slice() }));
+  const samples = [];
+  let segment = 1;
+  for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
+    const targetDistance = total * sampleIndex / (sampleCount - 1);
+    while (segment < distances.length - 2 && distances[segment] < targetDistance) segment += 1;
+    const previousIndex = segment - 1;
+    const segmentLength = distances[segment] - distances[previousIndex];
+    const alpha = segmentLength === 0 ? 0 : (targetDistance - distances[previousIndex]) / segmentLength;
+    const previousPosition = trajectory.positions[previousIndex];
+    const currentPosition = trajectory.positions[segment];
+    const previousForward = trajectory.forwards[previousIndex];
+    const currentForward = trajectory.forwards[segment];
+    const position = [0, 1, 2].map(axis => previousPosition[axis] + (currentPosition[axis] - previousPosition[axis]) * alpha);
+    const forward = [0, 1, 2].map(axis => previousForward[axis] + (currentForward[axis] - previousForward[axis]) * alpha);
+    const length = Math.hypot(forward[0], forward[1], forward[2]) || 1;
+    samples.push({ position, forward: forward.map(component => component / length) });
+  }
+  return samples;
+}
+function buildTrajectoryObjects() {
+  if (!state.trajectory) return null;
+  const samples = state.resampledTrajectory;
+  const linePositions = new Float32Array(samples.length * 3);
+  const lineColors = new Float32Array(samples.length * 3);
+  const color = new THREE.Color();
+  samples.forEach((sample, index) => {
+    const output = index * 3;
+    linePositions.set(sample.position, output);
+    color.setHSL(index / Math.max(samples.length - 1, 1) * .83, 1, .58);
+    lineColors[output] = color.r;
+    lineColors[output + 1] = color.g;
+    lineColors[output + 2] = color.b;
+  });
+  const lineGeometry = new THREE.BufferGeometry();
+  lineGeometry.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
+  lineGeometry.setAttribute('color', new THREE.BufferAttribute(lineColors, 3));
+  const line = new THREE.Line(lineGeometry, new THREE.LineBasicMaterial({ vertexColors: true }));
+  const markerScale = Math.max(state.sceneRadius * .008, .015);
+  const markerGeometry = new THREE.SphereGeometry(markerScale, 18, 12);
+  const marker = new THREE.Mesh(markerGeometry, new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  const start = new THREE.Mesh(markerGeometry, new THREE.MeshBasicMaterial({ color: 0x40ff80 }));
+  const end = new THREE.Mesh(markerGeometry, new THREE.MeshBasicMaterial({ color: 0xff6b5f }));
+  start.position.fromArray(samples[0].position);
+  end.position.fromArray(samples[samples.length - 1].position);
+  trajectoryGroup.add(line, marker, start, end);
+  trajectoryGroup.visible = elements.trajectoryVisible.checked;
+  return { line, marker, start, end };
+}
+function updateTrajectoryMarker(progress) {
+  if (!state.trajectoryObjects || !state.resampledTrajectory.length) return;
+  state.trajectoryObjects.marker.position.copy(samplePath(progress).position);
+}
+function samplePath(progress) {
+  if (!state.resampledTrajectory?.length) return null;
+  const samples = state.resampledTrajectory;
+  if (samples.length === 1) {
+    return {
+      position: new THREE.Vector3().fromArray(samples[0].position),
+      forward: new THREE.Vector3().fromArray(samples[0].forward).normalize(),
+    };
+  }
+  const target = Math.min(1, Math.max(0, Number(progress) || 0)) * state.totalPathLength;
+  let index = 0;
+  while (index < samples.length - 2 && state.pathDistances[index + 1] < target) index += 1;
+  const segmentLength = state.pathDistances[index + 1] - state.pathDistances[index];
+  const alpha = segmentLength === 0 ? 0 : (target - state.pathDistances[index]) / segmentLength;
+  const previous = samples[index];
+  const current = samples[index + 1];
+  return {
+    position: new THREE.Vector3(
+      previous.position[0] + (current.position[0] - previous.position[0]) * alpha,
+      previous.position[1] + (current.position[1] - previous.position[1]) * alpha,
+      previous.position[2] + (current.position[2] - previous.position[2]) * alpha,
+    ),
+    forward: new THREE.Vector3(
+      previous.forward[0] + (current.forward[0] - previous.forward[0]) * alpha,
+      previous.forward[1] + (current.forward[1] - previous.forward[1]) * alpha,
+      previous.forward[2] + (current.forward[2] - previous.forward[2]) * alpha,
+    ).normalize(),
+  };
+}
+function applyOrbit() {
+  if (!camera || !cameraController.target) return;
+  const sinPolar = Math.sin(cameraController.polar);
+  const direction = new THREE.Vector3(
+    sinPolar * Math.cos(cameraController.azimuth),
+    Math.cos(cameraController.polar),
+    sinPolar * Math.sin(cameraController.azimuth),
+  ).multiplyScalar(cameraController.radius);
+  camera.position.copy(cameraController.target).add(direction);
+  camera.up.set(0, -1, 0);
+  camera.lookAt(cameraController.target);
+  camera.updateMatrixWorld();
+}
+function applyDriveCamera(progress) {
+  if (!camera || !state.trajectory) return false;
+  const sample = samplePath(progress);
+  if (!sample) return false;
+  const lift = Number(elements.cameraHeight.value);
+  const backoff = Math.max(0, Number(elements.cameraBackoff.value));
+  const cameraCenter = sample.position.clone().addScaledVector(camera.up, lift);
+  camera.position.copy(cameraCenter).addScaledVector(sample.forward, -backoff);
+  camera.up.set(0, -1, 0);
+  camera.lookAt(cameraCenter.clone().addScaledVector(sample.forward, Math.max(state.sceneRadius * .05, .01)));
+  camera.updateMatrixWorld();
+  updateTrajectoryMarker(progress);
+  return true;
+}
+function setMode(mode) {
+  if (mode !== 'orbit' && mode !== 'drive') throw new Error(`Unknown camera mode: ${mode}`);
+  if (mode === 'drive' && !state.trajectory) {
+    setStatus('Drive mode is unavailable because this dataset has no poses/trajectory.', true);
+    return;
+  }
+  state.mode = mode;
+  elements.orbitButton.classList.toggle('active', mode === 'orbit');
+  elements.driveButton.classList.toggle('active', mode === 'drive');
+  elements.playPauseButton.disabled = mode !== 'drive';
+  cameraController.enabled = mode === 'orbit';
+  if (mode === 'orbit') applyOrbit();
+  else applyDriveCamera(state.progress);
+}
+function frameScene() {
+  if (!state.manifest || !camera || !cameraController.target) return;
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  const includePoint = point => {
+    for (let axis = 0; axis < 3; axis += 1) {
+      min[axis] = Math.min(min[axis], point[axis]);
+      max[axis] = Math.max(max[axis], point[axis]);
+    }
+  };
+  const robust = state.manifest.robust_bounds;
+  if (robust && Number.isFinite(Number(robust.radius)) && Number(robust.radius) >= 0 && Array.isArray(robust.center)) {
+    const center = finiteVector3(robust.center, 'manifest robust center');
+    const radius = Number(robust.radius);
+    includePoint(center.map(value => value - radius));
+    includePoint(center.map(value => value + radius));
+  } else {
+    includePoint(finiteVector3(state.manifest.bounds.min, 'manifest bounds minimum'));
+    includePoint(finiteVector3(state.manifest.bounds.max, 'manifest bounds maximum'));
+  }
+  for (const position of state.trajectory?.positions || []) includePoint(finiteVector3(position, 'trajectory position'));
+  if (!min.every(Number.isFinite) || !max.every(Number.isFinite)) throw new Error('Could not frame the point cloud: manifest/trajectory bounds contain non-finite values.');
+  const minVector = new THREE.Vector3().fromArray(min);
+  const maxVector = new THREE.Vector3().fromArray(max);
+  const center = minVector.clone().add(maxVector).multiplyScalar(.5);
+  const radius = Math.max(minVector.distanceTo(maxVector) / 2, .01);
+  state.sceneRadius = radius;
+  const verticalFov = camera.fov * Math.PI / 180;
+  const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * Math.min(camera.aspect, 1));
+  const distance = radius / Math.sin(Math.min(horizontalFov, verticalFov) / 2) * 1.12;
+  camera.near = Math.max(radius / 1000, .001);
+  camera.far = distance + radius * 25;
+  camera.updateProjectionMatrix();
+  cameraController.target.copy(center);
+  cameraController.radius = distance;
+  cameraController.azimuth = .72;
+  cameraController.polar = 1.24;
+  applyOrbit();
+}
+function disposeObject(object) {
+  object.traverse(child => {
+    if (child.geometry) child.geometry.dispose();
+    if (child.material) (Array.isArray(child.material) ? child.material : [child.material]).forEach(material => material.dispose());
+  });
+}
+function clearScene() {
+  if (pointGroup) disposeObject(pointGroup);
+  if (trajectoryGroup) disposeObject(trajectoryGroup);
+  if (pointGroup) pointGroup.clear();
+  if (trajectoryGroup) trajectoryGroup.clear();
+  state.chunkObjects = [];
+  state.trajectoryObjects = null;
+  state.resampledTrajectory = null;
+  state.pathDistances = null;
+  state.totalPathLength = 0;
+  state.trajectory = null;
+  state.currentChunkFile = null;
+  state.loadedPointCount = 0;
+  state.loadedChunkCount = 0;
+}
+function validateManifest(manifest, manifestUrl) {
+  if (!manifest || typeof manifest !== 'object') throw new Error('Manifest payload must be a JSON object.');
+  if (manifest.format !== 'abot-point-cloud-chunks' || manifest.version !== 1) throw new Error(`Unsupported manifest format at "${manifestUrl.href}": expected abot-point-cloud-chunks v1.`);
+  const encoding = manifest.position_encoding;
+  if (encoding !== 'uint16' && encoding !== 'float32') throw new Error(`Unsupported point-cloud chunk encoding: ${encoding}`);
+  if (!Number.isInteger(manifest.stride) || manifest.stride < expectedStride(encoding)) throw new Error(`Manifest stride ${manifest.stride} is invalid for ${encoding} chunks.`);
+  if (!Number.isInteger(manifest.point_count) || manifest.point_count < 0) throw new Error('Manifest point_count must be a non-negative integer.');
+  if (!Array.isArray(manifest.chunks)) throw new Error('Manifest chunks must be an array.');
+  const boundsMin = finiteVector3(manifest.bounds?.min, 'manifest bounds minimum');
+  const boundsMax = finiteVector3(manifest.bounds?.max, 'manifest bounds maximum');
+  for (let axis = 0; axis < 3; axis += 1) if (boundsMin[axis] > boundsMax[axis]) throw new Error('Manifest bounds minimum exceeds its maximum.');
+  manifest.bounds.min = boundsMin;
+  manifest.bounds.max = boundsMax;
+  if (manifest.robust_bounds) {
+    const center = finiteVector3(manifest.robust_bounds.center, 'manifest robust center');
+    const radius = numberOrError(manifest.robust_bounds.radius, 'manifest robust radius');
+    if (radius < 0) throw new Error('Manifest robust radius must be non-negative.');
+    manifest.robust_bounds = { center, radius };
+  }
+  for (const chunk of manifest.chunks) {
+    if (!chunk || typeof chunk.file !== 'string' || !chunk.file) throw new Error('Every manifest chunk requires a non-empty file name.');
+  }
+  return manifest;
+}
+async function loadScene() {
+  const loadToken = ++state.loadSequence;
+  state.activeLoadToken = loadToken;
+  const manifestValue = elements.manifestInput.value.trim();
+  if (!manifestValue) {
+    setStatus('Enter a manifest URL or choose a catalog dataset before loading.', true);
+    return;
+  }
+  setStatus('Initializing three.js…');
+  try {
+    await ensureThree();
+    initRenderer();
+    clearScene();
+    state.mode = 'orbit';
+    state.playing = false;
+    state.progress = 0;
+    elements.playbackProgress.value = '0';
+    elements.playbackProgressValue.textContent = '0%';
+    elements.playPauseButton.textContent = 'Play';
+    elements.driveButton.disabled = true;
+    elements.playPauseButton.disabled = true;
+    const manifestUrl = resolveUrl(manifestValue);
+    setStatus(`Loading manifest "${manifestUrl.href}"…`);
+    const manifest = validateManifest(await fetchJson(manifestUrl, 'manifest'), manifestUrl);
+    if (state.activeLoadToken !== loadToken) return;
+    state.manifest = manifest;
+    state.manifestUrl = manifestUrl;
+    state.expectedPointCount = manifest.point_count;
+    let trajectoryUrl = null;
+    if (elements.trajectoryInput.value.trim()) trajectoryUrl = resolveUrl(elements.trajectoryInput.value.trim());
+    else if (elements.trajectoryInput.dataset.explicitEmpty !== 'true' && typeof manifest.trajectory === 'string' && manifest.trajectory) trajectoryUrl = resolveUrl(manifest.trajectory, manifestUrl);
+    if (trajectoryUrl) {
+      setStatus(`Loading trajectory "${trajectoryUrl.href}"…`);
+      state.trajectory = buildTrajectory(await fetchJson(trajectoryUrl, 'trajectory'));
+      state.resampledTrajectory = resampleTrajectory(state.trajectory, 1024);
+      state.pathDistances = [0];
+      for (let index = 1; index < state.resampledTrajectory.length; index += 1) {
+        const previous = state.resampledTrajectory[index - 1].position;
+        const current = state.resampledTrajectory[index].position;
+        state.pathDistances.push(state.pathDistances[index - 1] + Math.hypot(current[0] - previous[0], current[1] - previous[1], current[2] - previous[2]));
+      }
+      state.totalPathLength = state.pathDistances[state.pathDistances.length - 1];
+    }
+    frameScene();
+    state.trajectoryObjects = buildTrajectoryObjects();
+    if (state.trajectory) {
+      elements.driveButton.disabled = false;
+      updateTrajectoryMarker(0);
+    }
+    setMode('orbit');
+    setStatus(`Manifest ready · loading ${manifest.chunks.length.toLocaleString()} chunks…`);
+    await loadChunks(manifestUrl, manifest);
+  } catch (error) {
+    if (state.activeLoadToken === loadToken) setStatus(error && error.message ? error.message : String(error), true);
+  } finally {
+    if (state.activeLoadToken === loadToken) state.activeLoadToken = 0;
+  }
+}
+function render(timestamp) {
+  if (!renderer || !scene || !camera) return;
+  const deltaSeconds = state.lastTimestamp === null ? 0 : Math.min((timestamp - state.lastTimestamp) / 1000, .1);
+  state.lastTimestamp = timestamp;
+  if (state.playing && state.mode === 'drive' && state.trajectory) {
+    state.progress = (state.progress + deltaSeconds * Number(elements.playbackSpeed.value)) % 1;
+    elements.playbackProgress.value = String(state.progress);
+    elements.playbackProgressValue.textContent = `${Math.round(state.progress * 100)}%`;
+    applyDriveCamera(state.progress);
+  }
+  renderer.render(scene, camera);
+  requestAnimationFrame(render);
+}
+function updatePlaybackControls() {
+  elements.playbackSpeedValue.textContent = `${Number(elements.playbackSpeed.value).toFixed(2)}×`;
+  elements.cameraHeightValue.textContent = `${Number(elements.cameraHeight.value).toFixed(2)} m`;
+  elements.cameraBackoffValue.textContent = `${Number(elements.cameraBackoff.value).toFixed(2)} m`;
+}
+async function loadCatalog() {
+  try {
+    const entries = await fetchJson('point_cloud_datasets.json', 'dataset catalog');
+    if (!Array.isArray(entries) || entries.length === 0) throw new Error('catalog is empty');
+    for (const [index, entry] of entries.entries()) {
+      if (!entry || typeof entry.name !== 'string' || typeof entry.manifest !== 'string') throw new Error(`catalog entry ${index} requires name and manifest`);
+      const option = document.createElement('option');
+      option.value = entry.name;
+      option.textContent = entry.name;
+      option.dataset.manifest = entry.manifest;
+      option.dataset.trajectory = typeof entry.trajectory === 'string' ? entry.trajectory : '';
+      elements.dataset.insertBefore(option, elements.dataset.querySelector('option[value="custom"]'));
+    }
+  } catch (error) {
+    setStatus(`Could not load dataset catalog: ${error.message}`, true);
+  }
+}
+function applyDatasetSelection() {
+  const selected = elements.dataset.selectedOptions[0];
+  if (selected?.value === 'custom') return;
+  elements.manifestInput.value = selected.dataset.manifest || '';
+  elements.trajectoryInput.value = selected.dataset.trajectory || '';
+}
+function setPlaying(playing) {
+  state.playing = playing;
+  elements.playPauseButton.textContent = playing ? 'Pause' : 'Play';
+}
+function updateProgressFromControl() {
+  const progress = Math.min(1, Math.max(0, Number(elements.playbackProgress.value)));
+  state.progress = progress;
+  elements.playbackProgressValue.textContent = `${Math.round(progress * 100)}%`;
+  if (state.mode === 'drive') applyDriveCamera(progress);
+  else updateTrajectoryMarker(progress);
+}
+function wireControls() {
+  elements.loadDataset.addEventListener('click', () => {
+    applyDatasetSelection();
+    void loadScene();
+  });
+  elements.dataset.addEventListener('change', () => {
+    applyDatasetSelection();
+    if (elements.dataset.value !== 'custom') setStatus('Dataset selected. Choose “Load selected dataset” to stream it.');
+  });
+  elements.orbitButton.addEventListener('click', () => setMode('orbit'));
+  elements.driveButton.addEventListener('click', () => setMode('drive'));
+  elements.playPauseButton.addEventListener('click', () => {
+    if (state.mode !== 'drive') return;
+    if (!state.playing && state.progress >= .999999) state.progress = 0;
+    setPlaying(!state.playing);
+  });
+  elements.resetButton.addEventListener('click', () => {
+    setPlaying(false);
+    state.progress = 0;
+    elements.playbackProgress.value = '0';
+    elements.playbackProgressValue.textContent = '0%';
+    setMode('orbit');
+    if (state.manifest) {
+      frameScene();
+      updateTrajectoryMarker(0);
+      setStatus(`Ready · ${state.loadedPointCount.toLocaleString()} points in ${state.loadedChunkCount} chunks`);
+    } else setStatus('Viewer reset. Choose a dataset or provide a manifest URL.');
+  });
+  elements.trajectoryVisible.addEventListener('change', () => {
+    if (trajectoryGroup) trajectoryGroup.visible = elements.trajectoryVisible.checked;
+  });
+  elements.pointSize.addEventListener('input', updatePointSize);
+  elements.playbackSpeed.addEventListener('input', updatePlaybackControls);
+  elements.playbackProgress.addEventListener('input', updateProgressFromControl);
+  const updateDriveCamera = () => { if (state.mode === 'drive') applyDriveCamera(state.progress); };
+  elements.cameraHeight.addEventListener('input', () => { updatePlaybackControls(); updateDriveCamera(); });
+  elements.cameraBackoff.addEventListener('input', () => { updatePlaybackControls(); updateDriveCamera(); });
+  updatePointSize();
+  updatePlaybackControls();
+}
+function applyQueryParameters() {
+  const parameters = new URLSearchParams(window.location.search);
+  const datasetName = parameters.get('dataset');
+  const manifest = parameters.get('manifest');
+  const trajectory = parameters.get('trajectory');
+  if (typeof trajectory === 'string') {
+    elements.trajectoryInput.value = trajectory;
+    elements.trajectoryInput.dataset.explicitEmpty = trajectory === '' ? 'true' : 'false';
+  }
+  if (manifest) {
+    elements.manifestInput.value = manifest;
+    if (datasetName && datasetName !== 'custom') {
+      const option = Array.from(elements.dataset.options).find(item => item.value === datasetName);
+      if (option) elements.dataset.value = datasetName;
+      else setStatus(`Dataset "${datasetName}" is not in the catalog; loading the supplied custom manifest.`);
+    }
+    return true;
+  }
+  if (datasetName && datasetName !== 'custom') {
+    const option = Array.from(elements.dataset.options).find(item => item.value === datasetName);
+    if (option) {
+      elements.dataset.value = datasetName;
+      applyDatasetSelection();
+      return true;
+    }
+    setStatus(`Dataset "${datasetName}" is not in the catalog. Choose a dataset or provide a manifest URL.`, true);
+  }
+  return false;
+}
+async function initializeViewer() {
+  wireControls();
+  await loadCatalog();
+  if (applyQueryParameters()) void loadScene();
+}
+initializeViewer().catch(error => setStatus(`Viewer initialization failed: ${error.message}`, true));
+</script>
+</body>
+</html>
