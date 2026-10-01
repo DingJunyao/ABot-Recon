@@ -369,6 +369,232 @@ def test_viewer_omits_unused_reload_state_and_chunk_argument(viewer):
     assert "manifestUrl" not in viewer_function(viewer, "loadChunks")
 
 
+def test_viewer_decodes_quantized_chunk_exact_positions_and_packed_rgb(viewer):
+    function = viewer_function(viewer, "decodeQuantizedChunk")
+
+    output = run_node(
+        f"""
+        const bytes = new Uint8Array([
+          10, 0, 20, 0, 30, 0, 0x12, 0x34, 0x56, 0xff,
+          0xff, 0xff, 0, 0, 0x7f, 0x7f, 0x78, 0x56, 0x34, 0x12,
+        ]);
+        const state = {{
+          manifest: {{ stride: 10 }},
+          currentChunkFile: 'quantized.pbin',
+        }};
+        {function}
+        const decoded = decodeQuantizedChunk(
+          bytes.buffer,
+          2,
+          [0, 0, 0],
+          [65535, 65535, 65535],
+        );
+        process.stdout.write(JSON.stringify({{
+          positions: Array.from(decoded.positions),
+          colors: Array.from(decoded.colors),
+        }}));
+        """
+    )
+
+    assert json.loads(output) == {
+        "positions": [10, 20, 30, 65535, 0, 32639],
+        "colors": [18, 52, 86, 120, 86, 52],
+    }
+
+
+def test_viewer_decodes_float_chunk_exact_positions_and_packed_rgb(viewer):
+    function = viewer_function(viewer, "decodeFloatChunk")
+
+    output = run_node(
+        f"""
+        const bytes = new Uint8Array([
+          0, 0, 0x80, 0x3f,
+          0, 0, 0x20, 0x40,
+          0, 0, 0x40, 0x40,
+          0x12, 0x34, 0x56, 0xff,
+          0, 0, 0x80, 0x40,
+          0, 0, 0xb0, 0x40,
+          0, 0, 0xc0, 0x40,
+          0x78, 0x56, 0x34, 0x12,
+        ]);
+        const state = {{
+          manifest: {{ stride: 16 }},
+          currentChunkFile: 'float.pbin',
+        }};
+        {function}
+        const decoded = decodeFloatChunk(bytes.buffer, 2);
+        process.stdout.write(JSON.stringify({{
+          positions: Array.from(decoded.positions),
+          colors: Array.from(decoded.colors),
+        }}));
+        """
+    )
+
+    assert json.loads(output) == {
+        "positions": [1, 2.5, 3, 4, 5.5, 6],
+        "colors": [18, 52, 86, 120, 86, 52],
+    }
+
+
+def test_viewer_rejects_chunk_buffer_that_is_not_exactly_count_times_stride(viewer):
+    function = viewer_function(viewer, "loadChunk")
+
+    output = run_node(
+        f"""
+        const state = {{
+          activeLoadToken: 1,
+          manifest: {{ stride: 10, position_encoding: 'uint16' }},
+          manifestUrl: 'https://example.test/manifest.json',
+          currentChunkFile: null,
+          loadedPointCount: 0,
+          loadedChunkCount: 0,
+        }};
+        function resolveUrl(value, base = 'https://example.test/') {{ return new URL(value, base); }}
+        let currentByteLength = 0;
+        async function fetch() {{
+          const byteLength = currentByteLength;
+          return {{
+            ok: true,
+            arrayBuffer: async () => new Uint8Array(byteLength).buffer,
+          }};
+        }}
+        function decodeQuantizedChunk() {{ throw new Error('should not decode'); }}
+        function decodeFloatChunk() {{ throw new Error('should not decode'); }}
+        function addChunkObject() {{}}
+        {function}
+        const messages = [];
+        for (const byteLength of [9, 11]) {{
+          currentByteLength = byteLength;
+          try {{
+            await loadChunk({{ file: 'chunk.pbin', count: 1 }}, 1);
+          }} catch (error) {{
+            messages.push(error.message);
+          }}
+        }}
+        process.stdout.write(JSON.stringify(messages));
+        """
+    )
+
+    assert json.loads(output) == [
+        'Could not load chunk "chunk.pbin": expected 10 bytes for 1 records, received 9.',
+        'Could not load chunk "chunk.pbin": expected 10 bytes for 1 records, received 11.',
+    ]
+
+
+def test_viewer_treats_empty_trajectory_as_no_trajectory(viewer):
+    function = viewer_function(viewer, "loadScene")
+
+    output = run_node(
+        f"""
+        const state = {{
+          loadSequence: 0, activeLoadToken: 0, manifest: null, manifestUrl: null,
+          trajectory: null, resampledTrajectory: null, pathDistances: null,
+          totalPathLength: 0, loadedPointCount: 0, loadedChunkCount: 0,
+          currentChunkFile: null, mode: 'orbit', playing: false, progress: 0,
+        }};
+        const elements = {{
+          manifestInput: {{ value: 'manifest.json' }},
+          trajectoryInput: {{ value: '', dataset: {{}} }},
+          playbackProgress: {{ value: '0' }},
+          playbackProgressValue: {{ textContent: '' }},
+          playPauseButton: {{ textContent: '', disabled: false }},
+          driveButton: {{ disabled: false }},
+        }};
+        function setStatus() {{}}
+        function resolveUrl(value, base = 'https://example.test/') {{ return new URL(value, base); }}
+        function validateManifest(value) {{ return value; }}
+        async function fetchJson(url) {{
+          if (url.pathname.endsWith('/manifest.json')) {{
+            return {{ chunks: [], point_count: 0, trajectory: 'trajectory.json' }};
+          }}
+          if (url.pathname.endsWith('/trajectory.json')) {{
+            return {{
+              format: 'abot-point-cloud-trajectory',
+              version: 1,
+              positions: [],
+              forwards: [],
+            }};
+          }}
+          throw new Error(`unexpected URL ${{url}}`);
+        }}
+        async function ensureThree() {{}}
+        function initRenderer() {{}}
+        function clearScene() {{
+          state.manifest = null;
+          state.trajectory = null;
+          state.resampledTrajectory = null;
+        }}
+        function buildTrajectory(payload) {{ return payload; }}
+        function resampleTrajectory() {{ return []; }}
+        function frameScene() {{}}
+        function buildTrajectoryObjects() {{ return null; }}
+        function updateTrajectoryMarker() {{}}
+        function setMode(mode) {{ state.mode = mode; }}
+        let chunksLoaded = false;
+        async function loadChunks() {{ chunksLoaded = true; }}
+        {function}
+        await loadScene();
+        process.stdout.write(JSON.stringify({{
+          trajectory: state.trajectory,
+          driveDisabled: elements.driveButton.disabled,
+          mode: state.mode,
+          chunksLoaded,
+        }}));
+        """
+    )
+
+    assert json.loads(output) == {
+        "trajectory": None,
+        "driveDisabled": True,
+        "mode": "orbit",
+        "chunksLoaded": True,
+    }
+
+
+def test_apply_dataset_selection_custom_clears_prior_catalog_trajectory(viewer):
+    function = viewer_function(viewer, "applyDatasetSelection")
+
+    output = run_node(
+        f"""
+        const elements = {{
+          manifestInput: {{ value: '/catalog/manifest.json' }},
+          trajectoryInput: {{ value: '/catalog/trajectory.json', dataset: {{}} }},
+          dataset: {{
+            selectedOptions: [{{ value: 'custom', dataset: {{}} }}],
+          }},
+        }};
+        {function}
+        applyDatasetSelection();
+        process.stdout.write(JSON.stringify({{
+          manifest: elements.manifestInput.value,
+          trajectory: elements.trajectoryInput.value,
+        }}));
+        """
+    )
+
+    assert json.loads(output) == {
+        "manifest": "",
+        "trajectory": "",
+    }
+
+
+def test_sync_trajectory_input_marks_explicit_empty_when_cleared(viewer):
+    function = viewer_function(viewer, "syncTrajectoryInputExplicitEmpty")
+
+    output = run_node(
+        f"""
+        const elements = {{
+          trajectoryInput: {{ value: '', dataset: {{}} }},
+        }};
+        {function}
+        syncTrajectoryInputExplicitEmpty();
+        process.stdout.write(elements.trajectoryInput.dataset.explicitEmpty);
+        """
+    )
+
+    assert output == "true"
+
+
 def test_viewer_loads_progressively_and_reports_errors(viewer):
     assert "loadedPointCount" in viewer
     assert "requestAnimationFrame(render)" in viewer

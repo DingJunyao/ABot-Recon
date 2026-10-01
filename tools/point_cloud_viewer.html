@@ -321,8 +321,8 @@ async function loadChunk(chunk, loadToken) {
   const buffer = await response.arrayBuffer();
   if (state.activeLoadToken !== loadToken) return null;
   const manifest = state.manifest;
-  const minimumBytes = chunk.count * manifest.stride;
-  if (buffer.byteLength < minimumBytes) throw new Error(`Could not load chunk "${chunk.file}": expected at least ${minimumBytes} bytes for ${chunk.count} records, received ${buffer.byteLength}.`);
+  const expectedBytes = chunk.count * manifest.stride;
+  if (buffer.byteLength !== expectedBytes) throw new Error(`Could not load chunk "${chunk.file}": expected ${expectedBytes} bytes for ${chunk.count} records, received ${buffer.byteLength}.`);
   let decoded;
   state.currentChunkFile = chunk.file;
   if (manifest.position_encoding === 'uint16') decoded = decodeQuantizedChunk(buffer, chunk.count, manifest.bounds.min, manifest.bounds.max);
@@ -618,15 +618,19 @@ async function loadScene() {
       setStatus(`Loading trajectory "${trajectoryUrl.href}"…`);
       const trajectoryPayload = await fetchJson(trajectoryUrl, 'trajectory');
       if (state.activeLoadToken !== loadToken) return;
-      state.trajectory = buildTrajectory(trajectoryPayload);
-      state.resampledTrajectory = resampleTrajectory(state.trajectory, 1024);
-      state.pathDistances = [0];
-      for (let index = 1; index < state.resampledTrajectory.length; index += 1) {
-        const previous = state.resampledTrajectory[index - 1].position;
-        const current = state.resampledTrajectory[index].position;
-        state.pathDistances.push(state.pathDistances[index - 1] + Math.hypot(current[0] - previous[0], current[1] - previous[1], current[2] - previous[2]));
+      if (trajectoryPayload && typeof trajectoryPayload === 'object' && Array.isArray(trajectoryPayload.positions) && trajectoryPayload.positions.length === 0) {
+        state.trajectory = null;
+      } else {
+        state.trajectory = buildTrajectory(trajectoryPayload);
+        state.resampledTrajectory = resampleTrajectory(state.trajectory, 1024);
+        state.pathDistances = [0];
+        for (let index = 1; index < state.resampledTrajectory.length; index += 1) {
+          const previous = state.resampledTrajectory[index - 1].position;
+          const current = state.resampledTrajectory[index].position;
+          state.pathDistances.push(state.pathDistances[index - 1] + Math.hypot(current[0] - previous[0], current[1] - previous[1], current[2] - previous[2]));
+        }
+        state.totalPathLength = state.pathDistances[state.pathDistances.length - 1];
       }
-      state.totalPathLength = state.pathDistances[state.pathDistances.length - 1];
     }
     frameScene();
     state.trajectoryObjects = buildTrajectoryObjects();
@@ -678,11 +682,20 @@ async function loadCatalog() {
     setStatus(`Could not load dataset catalog: ${error.message}`, true);
   }
 }
+function syncTrajectoryInputExplicitEmpty() {
+  elements.trajectoryInput.dataset.explicitEmpty = elements.trajectoryInput.value.trim() === '' ? 'true' : 'false';
+}
 function applyDatasetSelection() {
   const selected = elements.dataset.selectedOptions[0];
-  if (selected?.value === 'custom') return;
+  if (selected?.value === 'custom') {
+    elements.manifestInput.value = '';
+    elements.trajectoryInput.value = '';
+    elements.trajectoryInput.dataset.explicitEmpty = 'false';
+    return;
+  }
   elements.manifestInput.value = selected.dataset.manifest || '';
   elements.trajectoryInput.value = selected.dataset.trajectory || '';
+  syncTrajectoryInputExplicitEmpty();
 }
 function setPlaying(playing) {
   state.playing = playing;
@@ -704,6 +717,7 @@ function wireControls() {
     applyDatasetSelection();
     if (elements.dataset.value !== 'custom') setStatus('Dataset selected. Choose “Load selected dataset” to stream it.');
   });
+  elements.trajectoryInput.addEventListener('input', syncTrajectoryInputExplicitEmpty);
   elements.orbitButton.addEventListener('click', () => setMode('orbit'));
   elements.driveButton.addEventListener('click', () => setMode('drive'));
   elements.playPauseButton.addEventListener('click', () => {
@@ -750,9 +764,15 @@ function applyQueryParameters() {
       const option = Array.from(elements.dataset.options).find(item => item.value === datasetName);
       if (option) {
         elements.dataset.value = datasetName;
-        if (typeof trajectory !== 'string') elements.trajectoryInput.value = option.dataset.trajectory || '';
+        if (typeof trajectory !== 'string') {
+          elements.trajectoryInput.value = option.dataset.trajectory || '';
+          elements.trajectoryInput.dataset.explicitEmpty = elements.trajectoryInput.value.trim() === '' ? 'true' : 'false';
+        }
       }
       else setStatus(`Dataset "${datasetName}" is not in the catalog; loading the supplied custom manifest.`);
+    } else if (datasetName === 'custom' && typeof trajectory !== 'string') {
+      elements.trajectoryInput.value = '';
+      elements.trajectoryInput.dataset.explicitEmpty = 'false';
     }
     return true;
   }

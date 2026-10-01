@@ -318,6 +318,8 @@ def export_point_cloud_chunks(
     trajectory = None
     if poses_path is not None:
         trajectory = build_trajectory(load_camera_poses(Path(poses_path)))
+        if not trajectory["positions"]:
+            trajectory = None
 
     bounds_min = points.min(axis=0).astype(np.float64, copy=False)
     bounds_max = points.max(axis=0).astype(np.float64, copy=False)

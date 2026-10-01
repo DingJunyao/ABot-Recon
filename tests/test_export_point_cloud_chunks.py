@@ -394,3 +394,29 @@ def test_main_writes_compact_chunks_and_reports_result(tmp_path, capsys):
     assert (output_dir / "chunk-00000.pbin").stat().st_size == 20
     assert not (output_dir / "trajectory.json").exists()
     assert "Wrote 1 chunks, 2 points, 0.00 MB compact; trajectory: no" in capsys.readouterr().out
+
+
+def test_export_chunks_skips_trajectory_when_all_poses_are_invalid(tmp_path):
+    input_path = tmp_path / "points.ply"
+    output_dir = tmp_path / "chunks"
+    points = np.array([[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]], dtype=np.float32)
+    colors = np.array([[255, 0, 0], [0, 255, 0]], dtype=np.uint8)
+    make_rgb_ply(input_path, points, colors)
+
+    poses = np.zeros((2, 4, 4), dtype=np.float32)
+    poses[:, 3, 3] = 1.0
+    poses[:, :3, 3] = [[0, 0, 0], [2, 0, 0]]
+    poses[:, :3, 2] = [0, 0, 0]
+    poses_path = tmp_path / "camera_poses.npy"
+    np.save(poses_path, poses)
+
+    manifest = export_point_cloud_chunks(
+        input_path,
+        output_dir,
+        poses_path=poses_path,
+        position_encoding="uint16",
+    )
+
+    assert "trajectory" not in manifest
+    assert not (output_dir / "trajectory.json").exists()
+    assert (output_dir / "manifest.json").exists()
