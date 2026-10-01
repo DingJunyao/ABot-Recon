@@ -1,4 +1,4 @@
-"""Convert an RGB reconstruction PLY into compact streamed point chunks."""
+﻿"""Convert an RGB reconstruction PLY into compact streamed point chunks."""
 
 from __future__ import annotations
 
@@ -196,6 +196,63 @@ def read_rgb_ply(
 
     finite = np.isfinite(points).all(axis=1)
     return points[finite], colors[finite]
+
+
+def robust_bounds(points: np.ndarray, sample_limit: int = 20000) -> dict[str, list[float]]:
+    """Return outlier-resistant framing bounds for an XYZ point array."""
+    points = np.asarray(points)
+    finite_points = points[np.isfinite(points).all(axis=1)]
+    if finite_points.shape[1:] != (3,):
+        raise ValueError("points must have XYZ columns")
+
+    if len(finite_points) > sample_limit:
+        indices = np.linspace(
+            0, len(finite_points) - 1, sample_limit, dtype=np.int64
+        )
+        finite_points = finite_points[indices]
+
+    center = np.median(finite_points, axis=0)
+    distances = np.linalg.norm(finite_points - center, axis=1)
+    radius = max(float(np.percentile(distances, 96)), 1e-3)
+    return {
+        "center": [float(value) for value in center],
+        "radius": radius,
+    }
+
+
+def load_camera_poses(path: Path) -> np.ndarray:
+    """Load and validate an [N, 4, 4] finite camera-pose array."""
+    poses = np.load(Path(path), allow_pickle=False)
+    if poses.ndim != 3 or poses.shape[1:] != (4, 4):
+        raise ValueError("camera poses must have shape [N, 4, 4]")
+    if not np.isfinite(poses).all():
+        raise ValueError("camera poses must contain only finite values")
+    return poses
+
+
+def build_trajectory(poses: np.ndarray) -> dict[str, Any]:
+    """Convert camera centers and optical axes to a JSON-safe trajectory."""
+    poses = np.asarray(poses)
+    if poses.ndim != 3 or poses.shape[1:] != (4, 4):
+        raise ValueError("camera poses must have shape [N, 4, 4]")
+
+    centers = poses[:, :3, 3]
+    forwards = poses[:, :3, 2]
+    lengths = np.linalg.norm(forwards, axis=1)
+    valid = (
+        np.isfinite(centers).all(axis=1)
+        & np.isfinite(forwards).all(axis=1)
+        & np.isfinite(lengths)
+        & (lengths > 0)
+    )
+
+    return {
+        "format": "abot-point-cloud-trajectory",
+        "version": 1,
+        "coordinate_system": "original ABot-Recon world coordinates",
+        "positions": centers[valid].tolist(),
+        "forwards": (forwards[valid] / lengths[valid, None]).tolist(),
+    }
 
 
 def point_budget_indices(point_count: int, max_points: int) -> np.ndarray:

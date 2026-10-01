@@ -153,3 +153,48 @@ def test_point_budget_indices_retains_or_evenly_samples():
     assert np.array_equal(point_budget_indices(0, 10), np.empty(0, dtype=np.int64))
     assert np.array_equal(point_budget_indices(1, 4), [0])
     assert np.array_equal(point_budget_indices(5, 3), [0, 2, 4])
+
+from scripts.export_point_cloud_chunks import build_trajectory, load_camera_poses, robust_bounds
+
+
+def test_robust_bounds_uses_median_center_and_high_distance_percentile():
+    inliers = np.column_stack((
+        np.arange(100, dtype=np.float32),
+        np.zeros(100, dtype=np.float32),
+        np.zeros(100, dtype=np.float32),
+    ))
+    points = np.vstack((inliers, [[1000.0, 0.0, 0.0]]), dtype=np.float32)
+    result = robust_bounds(points, sample_limit=1000)
+    assert result["center"] == [50.0, 0.0, 0.0]
+    assert 47.0 <= result["radius"] <= 50.0
+
+
+def test_load_camera_poses_validates_shape_and_finite_values(tmp_path):
+    poses = np.repeat(np.eye(4, dtype=np.float32)[None, :, :], 3, axis=0)
+    poses[:, :3, 3] = [[0, 0, 0], [1, 0, 0], [2, 0, 0]]
+    path = tmp_path / "camera_poses.npy"
+    np.save(path, poses)
+
+    assert np.array_equal(load_camera_poses(path), poses)
+
+    bad = poses.copy()
+    bad[1, 0, 0] = np.nan
+    bad_path = tmp_path / "bad.npy"
+    np.save(bad_path, bad)
+    with pytest.raises(ValueError, match="finite"):
+        load_camera_poses(bad_path)
+
+
+def test_build_trajectory_returns_centers_and_normalized_optical_forwards():
+    poses = np.zeros((2, 4, 4), dtype=np.float64)
+    poses[:, 3, 3] = 1.0
+    poses[:, :3, 3] = [[0, 0, 0], [2, 0, 0]]
+    poses[:, :3, 2] = [0, 2, 0]
+
+    result = build_trajectory(poses)
+
+    assert result["format"] == "abot-point-cloud-trajectory"
+    assert result["version"] == 1
+    assert result["coordinate_system"] == "original ABot-Recon world coordinates"
+    assert result["positions"] == [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]
+    assert result["forwards"] == [[0.0, 1.0, 0.0], [0.0, 1.0, 0.0]]
