@@ -231,6 +231,38 @@ python scripts/export_reconstruction_ply.py \
 
 该命令会生成 RGB 点云 PLY，以及一张独立的 BEV 轨迹图；轨迹不会写入 PLY。
 
+### 网页交互查看与行车播放
+
+对 `demo_loop` 等长时间、大规模结果，先生成流式硬点云 chunks：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\export_point_cloud_chunks.py `
+  --input outputs\demo_loop\reconstruction.ply `
+  --poses outputs\demo_loop\camera_poses.npy `
+  --output-dir outputs\demo_loop\point_cloud_chunks `
+  --fps 30
+```
+
+`--fps` 用于让网页中的 `1×` 播放倍率对应源视频实时速度。如果抽帧了，应填写
+原始视频 FPS 除以抽帧间隔后的有效帧率。
+
+启动本地服务并打开查看器：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\serve_pseudo_gaussian_viewer.py --no-browser
+```
+
+```text
+http://127.0.0.1:8765/tools/point_cloud_viewer.html
+```
+
+在页面中选择 `demo_loop · full RGB`，然后点击 `加载所选数据集`。加载完成后：
+
+- `交互查看`：左键拖拽旋转，右键或 Shift+左键拖拽平移，滚轮缩放；
+- `行车播放`：左键拖拽改变相机朝向，右键或 Shift+左键拖拽平移，滚轮调整 FOV；
+- `播放倍率`：`1×` 按源视频 FPS 实时播放；右侧同时显示等价的 `f/s`；
+- 进度条可跳转，`重置视角` 恢复自动取景。
+
 ## 评测
 
 相机位姿与稠密重建评测协议维护在 `eval` 分支：

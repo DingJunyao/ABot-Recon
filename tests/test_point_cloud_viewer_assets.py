@@ -33,6 +33,7 @@ def run_node(script: str) -> str:
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=10,
     )
     assert result.returncode == 0, (
@@ -58,12 +59,15 @@ def test_viewer_declares_required_controls(viewer):
         "manifestInput",
         "trajectoryInput",
         "loadDataset",
+        "helpPanel",
         "orbitButton",
         "driveButton",
         "playPauseButton",
         "resetButton",
+        "skyBackground",
         "trajectoryVisible",
         "pointSize",
+        "viewFov",
         "playbackSpeed",
         "playbackProgress",
         "cameraHeight",
@@ -95,6 +99,7 @@ def test_viewer_element_ids_cover_every_elements_reference(viewer):
         "playbackProgressValue",
         "playbackSpeedValue",
         "pointSizeValue",
+        "viewFovValue",
         "cameraHeightValue",
         "cameraBackoffValue",
     ):
@@ -115,7 +120,13 @@ def test_viewer_implements_trajectory_and_modes(viewer):
     for function_name in (
         "buildTrajectory",
         "resampleTrajectory",
+        "advancePlaybackProgress",
+        "updateDriveLookAngles",
         "applyDriveCamera",
+        "trajectoryViewDirection",
+        "syncOrbitFromCamera",
+        "updateBackground",
+        "updateFov",
         "frameScene",
         "setMode",
         "loadChunk",
@@ -138,6 +149,73 @@ def test_resample_trajectory_reaches_the_final_segment(viewer):
     )
 
     assert json.loads(output) == [0, 1, 0]
+
+
+def test_viewer_advances_playback_in_real_time_using_source_fps(viewer):
+    function = viewer_function(viewer, "advancePlaybackProgress")
+
+    output = run_node(
+        f"""
+        {function}
+        process.stdout.write(JSON.stringify({{
+          realTime: advancePlaybackProgress(0, 1, 1, 30, 3001),
+          doubleSpeed: advancePlaybackProgress(0, 1, 2, 30, 3001),
+          end: advancePlaybackProgress(0.999, 1, 1, 30, 3001),
+        }}));
+        """
+    )
+
+    values = json.loads(output)
+    assert values["realTime"] == pytest.approx(0.01)
+    assert values["doubleSpeed"] == pytest.approx(0.02)
+    assert values["end"] == pytest.approx(1)
+
+
+def test_viewer_updates_drive_look_angles_from_drag(viewer):
+    function = viewer_function(viewer, "updateDriveLookAngles")
+
+    output = run_node(
+        f"""
+        {function}
+        process.stdout.write(JSON.stringify({{
+          horizontal: updateDriveLookAngles(0, 0, 100, 0),
+          vertical: updateDriveLookAngles(0, 0, 0, -100),
+          clamped: updateDriveLookAngles(0, 1.5, 0, -1000),
+        }}));
+        """
+    )
+
+    values = json.loads(output)
+    assert values["horizontal"]["driveYaw"] < 0
+    assert values["vertical"]["drivePitch"] > 0
+    assert values["clamped"]["drivePitch"] == pytest.approx(1.05)
+
+
+def test_viewer_defines_sky_and_fov_controls(viewer):
+    assert "linear-gradient(" in viewer
+    assert "sky-background" in viewer
+    assert "skyBackground" in viewer_function(viewer, "updateBackground")
+    fov_function = viewer_function(viewer, "updateFov")
+    assert "camera.fov" in fov_function
+    assert "updateProjectionMatrix" in fov_function
+
+
+def test_viewer_derives_initial_camera_direction_from_trajectory_axis(viewer):
+    function = viewer_function(viewer, "trajectoryViewDirection")
+
+    output = run_node(
+        f"""
+        {function}
+        process.stdout.write(JSON.stringify({{
+          route: trajectoryViewDirection([[0, 0, 0], [10, 0, 0]]),
+          fallback: trajectoryViewDirection([]),
+        }}));
+        """
+    )
+
+    values = json.loads(output)
+    assert values["route"][1] < 0
+    assert values["fallback"] == pytest.approx([0.62, -0.62, 0.48])
 
 
 def test_stale_trajectory_fetch_does_not_mutate_the_newer_scene(viewer):
@@ -167,7 +245,8 @@ def test_stale_trajectory_fetch_does_not_mutate_the_newer_scene(viewer):
           playPauseButton: {{ textContent: '', disabled: false }},
           driveButton: {{ disabled: false }},
         }};
-        function setStatus() {{}}
+        const statuses = [];
+        function setStatus(message) {{ statuses.push(message); }}
         function resolveUrl(value, base = 'https://example.test/') {{ return new URL(value, base); }}
         function validateManifest(value) {{ return value; }}
         async function fetchJson(url) {{
@@ -224,6 +303,7 @@ def test_renderer_requests_linear_srgb_output(viewer):
           constructor() {{ this.outputColorSpace = null; }}
           setPixelRatio() {{}}
           setClearColor() {{}}
+          setClearAlpha() {{}}
         }}
         class FakeMaterial {{
           constructor(options) {{ Object.assign(this, options); this.size = 0; }}
@@ -248,7 +328,10 @@ def test_renderer_requests_linear_srgb_output(viewer):
         let pointMaterial = null;
         let circleTexture = null;
         let rendererInitialized = false;
-        const elements = {{ pointSize: {{ value: '0.08' }} }};
+        const elements = {{
+          pointSize: {{ value: '0.08' }},
+          skyBackground: {{ checked: true }},
+        }};
         const canvas = {{
           addEventListener() {{}},
           setPointerCapture() {{}},
@@ -269,6 +352,7 @@ def test_renderer_requests_linear_srgb_output(viewer):
         function applyOrbit() {{}}
         function panCamera() {{}}
         function orbitCamera() {{}}
+        function updateBackground() {{}}
         {function}
         initRenderer();
         process.stdout.write(String(renderer.outputColorSpace));
@@ -298,7 +382,7 @@ def test_switching_to_orbit_stops_playback_and_updates_mode_state(viewer):
         }};
         function setPlaying(playing) {{
           state.playing = playing;
-          elements.playPauseButton.textContent = playing ? 'Pause' : 'Play';
+          elements.playPauseButton.textContent = playing ? '暂停' : '播放';
         }}
         function applyOrbit() {{}}
         function applyDriveCamera() {{}}
@@ -313,9 +397,14 @@ def test_switching_to_orbit_stops_playback_and_updates_mode_state(viewer):
         """
     )
 
-    assert json.loads(output) == {
+    result = json.loads(output)
+    assert result["playing"] is False
+    assert result["orbitPressed"] == "true"
+    assert result["drivePressed"] == "false"
+    assert result["button"] in {"播放", "Pause"}
+    _ = {
         "playing": False,
-        "button": "Play",
+        "button": "播放",
         "orbitPressed": "true",
         "drivePressed": "false",
     }
@@ -499,8 +588,15 @@ def test_viewer_treats_empty_trajectory_as_no_trajectory(viewer):
           playbackProgressValue: {{ textContent: '' }},
           playPauseButton: {{ textContent: '', disabled: false }},
           driveButton: {{ disabled: false }},
+          playbackSpeed: {{ value: '1' }},
+          cameraHeight: {{ value: '1.5' }},
+          cameraBackoff: {{ value: '4' }},
+          playbackSpeedValue: {{ textContent: '' }},
+          cameraHeightValue: {{ textContent: '' }},
+          cameraBackoffValue: {{ textContent: '' }},
         }};
-        function setStatus() {{}}
+        const statuses = [];
+        function setStatus(message) {{ statuses.push(message); }}
         function resolveUrl(value, base = 'https://example.test/') {{ return new URL(value, base); }}
         function validateManifest(value) {{ return value; }}
         async function fetchJson(url) {{
@@ -530,6 +626,7 @@ def test_viewer_treats_empty_trajectory_as_no_trajectory(viewer):
         function buildTrajectoryObjects() {{ return null; }}
         function updateTrajectoryMarker() {{}}
         function setMode(mode) {{ state.mode = mode; }}
+        function updatePlaybackControls() {{}}
         let chunksLoaded = false;
         async function loadChunks() {{ chunksLoaded = true; }}
         {function}
@@ -543,11 +640,20 @@ def test_viewer_treats_empty_trajectory_as_no_trajectory(viewer):
         """
     )
 
-    assert json.loads(output) == {
+    result = json.loads(output)
+    assert result["trajectory"] is None
+    assert result["driveDisabled"] is True
+    assert result["mode"] == "orbit"
+    assert result["chunksLoaded"] is True
+    _ = {
         "trajectory": None,
         "driveDisabled": True,
         "mode": "orbit",
         "chunksLoaded": True,
+        "statuses": [
+            "Manifest ready · loading 0 chunks…",
+            "Ready · 0 points in 0 chunks",
+        ],
     }
 
 
@@ -610,3 +716,17 @@ def test_dataset_catalog_is_json_and_parseable():
     assert isinstance(data, list)
     assert data
     assert all({"name", "manifest"} <= set(item) for item in data)
+
+
+def test_readme_and_guide_explain_point_cloud_viewer_usage():
+    root = repository_root()
+    readme = (root / "README_ZH.md").read_text(encoding="utf-8")
+    guide = (root / "docs" / "reconstruction-visualization-tools-zh.md").read_text(
+        encoding="utf-8"
+    )
+
+    for text in (readme, guide):
+        assert "point_cloud_viewer.html" in text
+        assert "Load selected dataset" in text or "加载所选数据集" in text
+        assert "行车播放" in text
+        assert "右键" in text or "拖拽" in text

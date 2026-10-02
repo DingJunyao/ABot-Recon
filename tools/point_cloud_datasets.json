@@ -2,6 +2,7 @@
   {
     "name": "demo_loop · full RGB",
     "manifest": "/outputs/demo_loop/point_cloud_chunks/manifest.json",
-    "trajectory": "/outputs/demo_loop/point_cloud_chunks/trajectory.json"
+    "trajectory": "/outputs/demo_loop/point_cloud_chunks/trajectory.json",
+    "fps": 30
   }
 ]

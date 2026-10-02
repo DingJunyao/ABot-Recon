@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -9,6 +9,7 @@
   :root { color-scheme: dark; font-family: Inter, "Segoe UI", system-ui, sans-serif; }
   * { box-sizing: border-box; }
   html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #07090c; color: #edf1f7; }
+  body.sky-background { background: linear-gradient(to bottom, #2f72e2 0%, #9bc8ef 43%, #d9e8f4 49%, #8b929a 50%, #667078 72%, #474e55 100%); }
   canvas#canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
   .panel { position: fixed; top: 14px; left: 14px; z-index: 2; display: grid; gap: 9px; width: 328px; max-height: calc(100vh - 28px); overflow-y: auto; padding: 14px; border: 1px solid rgba(255,255,255,.13); border-radius: 12px; background: rgba(9,12,17,.88); box-shadow: 0 14px 40px rgba(0,0,0,.38); backdrop-filter: blur(12px); }
   h1 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: .01em; }
@@ -33,50 +34,59 @@
   .status { min-height: 34px; padding: 8px; border-top: 1px solid rgba(255,255,255,.1); color: #a8b5c4; font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
   .status.error { color: #ff9c93; }
   .hint { position: fixed; right: 14px; bottom: 12px; z-index: 1; color: #77828f; font-size: 11px; line-height: 1.55; text-align: right; pointer-events: none; }
+  details { border-top: 1px solid rgba(255,255,255,.09); padding-top: 8px; color: #aeb9c7; font-size: 11px; }
+  summary { cursor: pointer; color: #dce5f1; font-weight: 600; }
+  details p { margin: 6px 0 0; line-height: 1.55; }
   @media (max-width: 680px) { .panel { width: calc(100vw - 24px); max-height: calc(100vh - 72px); } .hint { display: none; } }
 </style>
 </head>
 <body>
 <canvas id="canvas" aria-label="RGB point-cloud viewport"></canvas>
 <section class="panel" aria-label="Point-cloud viewer controls">
-  <h1>Progressive RGB Points</h1>
-  <p class="subtitle">Streams <code>abot-point-cloud-chunks</code> v1 and renders opaque circular points with depth sorting.</p>
+  <h1>ABot-Recon 彩色点云</h1>
+  <p class="subtitle">流式加载 <code>abot-point-cloud-chunks</code>，按原始 RGB 硬点云查看。</p>
   <fieldset>
-    <label for="dataset">Dataset</label>
+    <label for="dataset">数据集</label>
     <select id="dataset"><option value="custom" selected>Custom manifest…</option></select>
-    <label for="manifestInput">Manifest URL</label>
+    <label for="manifestInput">Manifest 地址</label>
     <input id="manifestInput" type="url" spellcheck="false" placeholder="/outputs/demo_loop/point_cloud_chunks/manifest.json">
-    <label for="trajectoryInput">Trajectory URL (optional)</label>
+    <label for="trajectoryInput">轨迹地址（可选）</label>
     <input id="trajectoryInput" type="url" spellcheck="false" placeholder="/outputs/demo_loop/point_cloud_chunks/trajectory.json">
   </fieldset>
-  <button id="loadDataset" type="button">Load selected dataset</button>
-  <fieldset class="row" aria-label="Camera mode">
-    <button id="orbitButton" class="active" type="button" aria-pressed="true">Orbit</button>
-    <button id="driveButton" type="button" aria-pressed="false" disabled>Drive</button>
+  <button id="loadDataset" type="button">加载所选数据集</button>
+  <fieldset class="row" aria-label="相机模式">
+    <button id="orbitButton" class="active" type="button" aria-pressed="true">交互查看</button>
+    <button id="driveButton" type="button" aria-pressed="false" disabled>行车播放</button>
   </fieldset>
-  <fieldset class="row" aria-label="Playback">
-    <button id="playPauseButton" type="button" disabled>Play</button>
-    <button id="resetButton" type="button">Reset</button>
+  <fieldset class="row" aria-label="播放">
+    <button id="playPauseButton" type="button" disabled>播放</button>
+    <button id="resetButton" type="button">重置视角</button>
   </fieldset>
   <fieldset class="sliders">
-    <div class="slider-row"><label for="playbackProgress">Progress</label><input id="playbackProgress" type="range" min="0" max="1" step="0.0001" value="0"><output id="playbackProgressValue" for="playbackProgress">0%</output></div>
-    <div class="slider-row"><label for="playbackSpeed">Speed</label><input id="playbackSpeed" type="range" min="0.02" max="1" step="0.01" value="0.18"><output id="playbackSpeedValue" for="playbackSpeed">0.18×</output></div>
-    <div class="slider-row"><label for="pointSize">Point size</label><input id="pointSize" type="range" min="0.01" max="1" step="0.005" value="0.08"><output id="pointSizeValue" for="pointSize">0.080</output></div>
-    <div class="slider-row"><label for="cameraHeight">Camera lift</label><input id="cameraHeight" type="range" min="-20" max="80" step="0.25" value="1.5"><output id="cameraHeightValue" for="cameraHeight">1.50 m</output></div>
-    <div class="slider-row"><label for="cameraBackoff">Backoff</label><input id="cameraBackoff" type="range" min="0" max="40" step="0.25" value="4"><output id="cameraBackoffValue" for="cameraBackoff">4.00 m</output></div>
+    <div class="slider-row"><label for="playbackProgress">播放进度</label><input id="playbackProgress" type="range" min="0" max="1" step="0.0001" value="0"><output id="playbackProgressValue" for="playbackProgress">0%</output></div>
+    <div class="slider-row"><label for="playbackSpeed">播放倍率</label><input id="playbackSpeed" type="range" min="0.1" max="8" step="0.1" value="1"><output id="playbackSpeedValue" for="playbackSpeed">1.00×</output></div>
+    <div class="slider-row"><label for="pointSize">点大小</label><input id="pointSize" type="range" min="0.01" max="1" step="0.005" value="0.08"><output id="pointSizeValue" for="pointSize">0.080</output></div>
+    <div class="slider-row"><label for="viewFov">视角 FOV</label><input id="viewFov" type="range" min="30" max="100" step="1" value="55"><output id="viewFovValue" for="viewFov">55°</output></div>
+    <div class="slider-row"><label for="cameraHeight">相机高度</label><input id="cameraHeight" type="range" min="-20" max="80" step="0.25" value="1.5"><output id="cameraHeightValue" for="cameraHeight">1.50 m</output></div>
+    <div class="slider-row"><label for="cameraBackoff">相机后退</label><input id="cameraBackoff" type="range" min="0" max="40" step="0.25" value="4"><output id="cameraBackoffValue" for="cameraBackoff">4.00 m</output></div>
   </fieldset>
-  <label class="check-row" for="trajectoryVisible"><input id="trajectoryVisible" type="checkbox" checked> Show trajectory, markers, and current camera</label>
-  <div id="status" class="status" role="status" aria-live="polite">Choose a dataset or provide a manifest URL.</div>
+  <label class="check-row" for="skyBackground"><input id="skyBackground" type="checkbox" checked> 天空背景</label>
+  <label class="check-row" for="trajectoryVisible"><input id="trajectoryVisible" type="checkbox" checked> 显示轨迹、标记与当前相机</label>
+  <details id="helpPanel">
+    <summary>使用说明</summary>
+    <p>选择 <strong>demo_loop · full RGB</strong> 后点击“加载所选数据集”。交互查看：左键拖拽旋转，右键或 Shift+左键拖拽平移，滚轮缩放。行车播放：左键拖拽改变朝向，右键或 Shift+左键拖拽平移，滚轮缩放。播放倍率 1× 表示按源视频 FPS 实时播放。</p>
+  </details>
+  <div id="status" class="status" role="status" aria-live="polite">请选择数据集或输入 manifest 地址。</div>
 </section>
-<div class="hint">Left drag · orbit<br>Right or Shift+left drag · pan<br>Wheel · zoom</div>
+<div class="hint">左键拖拽 · 旋转 / 改变朝向<br>右键或 Shift+左键拖拽 · 平移<br>滚轮 · 缩放</div>
 <script type="module">
 'use strict';
 const elementIds = [
   'dataset', 'manifestInput', 'trajectoryInput', 'loadDataset',
   'orbitButton', 'driveButton', 'playPauseButton', 'resetButton',
-  'trajectoryVisible', 'pointSize', 'playbackSpeed', 'playbackProgress',
+  'skyBackground', 'trajectoryVisible', 'pointSize', 'viewFov', 'playbackSpeed', 'playbackProgress',
   'cameraHeight', 'cameraBackoff', 'status',
-  'playbackProgressValue', 'playbackSpeedValue', 'pointSizeValue',
+  'playbackProgressValue', 'playbackSpeedValue', 'pointSizeValue', 'viewFovValue',
   'cameraHeightValue', 'cameraBackoffValue',
 ];
 const elements = Object.fromEntries(elementIds.map(id => [id, document.getElementById(id)]));
@@ -91,6 +101,7 @@ const state = {
   totalPathLength: 0, loadedPointCount: 0,
   loadedChunkCount: 0, loadSequence: 0, activeLoadToken: 0, mode: 'orbit',
   playing: false, progress: 0, lastTimestamp: null, sceneRadius: 1,
+  sourceFps: 30, driveYaw: 0, drivePitch: 0,
 };
 let THREE = null;
 let renderer = null;
@@ -172,10 +183,10 @@ function initRenderer() {
     depthTest: true, depthWrite: true, blending: THREE.NoBlending,
   });
   pointMaterial.size = Number(elements.pointSize.value);
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'high-performance' });
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: 'high-performance' });
   if (THREE.LinearSRGBColorSpace) renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-  renderer.setClearColor(0x07090c, 1);
+  updateBackground();
   scene = new THREE.Scene();
   camera = new THREE.PerspectiveCamera(50, 1, .1, 1000);
   camera.up.set(0, -1, 0);
@@ -199,7 +210,10 @@ function initRenderer() {
     const deltaY = event.clientY - pointer.y;
     pointer.x = event.clientX; pointer.y = event.clientY; pointer.shiftKey = event.shiftKey;
     if (pointer.button === 2 || pointer.shiftKey) panCamera(deltaX, deltaY);
-    else orbitCamera(deltaX, deltaY);
+    else if (state.mode === 'drive') {
+      Object.assign(state, updateDriveLookAngles(state.driveYaw, state.drivePitch, deltaX, deltaY));
+      applyDriveCamera(state.progress);
+    } else orbitCamera(deltaX, deltaY);
   });
   const releasePointer = event => {
     if (cameraController.pointer?.id !== event.pointerId) return;
@@ -211,6 +225,11 @@ function initRenderer() {
   canvas.addEventListener('wheel', event => {
     if (!cameraController.enabled) return;
     event.preventDefault();
+    if (state.mode === 'drive') {
+      elements.viewFov.value = String(Math.min(100, Math.max(30, camera.fov + Math.sign(event.deltaY) * 2)));
+      updateFov();
+      return;
+    }
     const factor = Math.exp(Math.sign(event.deltaY) * Math.min(Math.abs(event.deltaY) / 650, .22));
     cameraController.radius = Math.min(Math.max(cameraController.radius * factor, Math.max(state.sceneRadius * .002, .001)), state.sceneRadius * 25);
     applyOrbit();
@@ -245,6 +264,57 @@ function updatePointSize() {
   const size = Number(elements.pointSize.value);
   elements.pointSizeValue.textContent = size.toFixed(3);
   if (pointMaterial) pointMaterial.size = size;
+}
+function updateBackground() {
+  const enabled = Boolean(elements.skyBackground?.checked);
+  document.body.classList.toggle('sky-background', enabled);
+  if (renderer) {
+    renderer.setClearColor(0x07090c, enabled ? 0 : 1);
+    renderer.setClearAlpha(enabled ? 0 : 1);
+  }
+}
+function updateFov() {
+  const fov = Number(elements.viewFov.value);
+  elements.viewFovValue.textContent = `${fov.toFixed(0)}°`;
+  if (camera) {
+    camera.fov = fov;
+    camera.updateProjectionMatrix();
+  }
+}
+function advancePlaybackProgress(progress, deltaSeconds, speedMultiplier, sourceFps, frameCount) {
+  const frames = Math.max(1, Number(frameCount) - 1);
+  const delta = Math.max(0, Number(deltaSeconds))
+    * Math.max(0, Number(speedMultiplier))
+    * Math.max(1, Number(sourceFps))
+    / frames;
+  return Math.min(1, Math.max(0, Number(progress) + delta));
+}
+function updateDriveLookAngles(yaw, pitch, deltaX, deltaY) {
+  return {
+    driveYaw: Number(yaw) - Number(deltaX) * .005,
+    drivePitch: Math.min(1.05, Math.max(-1.05, Number(pitch) - Number(deltaY) * .005)),
+  };
+}
+function trajectoryViewDirection(positions) {
+  const fallback = [0.62, -0.62, 0.48];
+  if (!Array.isArray(positions) || positions.length < 2) return fallback;
+  const start = positions[0];
+  const end = positions[positions.length - 1];
+  const axis = [end[0] - start[0], end[1] - start[1], end[2] - start[2]];
+  const up = [0, -1, 0];
+  const side = [
+    axis[1] * up[2] - axis[2] * up[1],
+    axis[2] * up[0] - axis[0] * up[2],
+    axis[0] * up[1] - axis[1] * up[0],
+  ];
+  const sideLength = Math.hypot(...side);
+  if (sideLength <= 1e-9) return fallback;
+  const direction = side.map(value => value / sideLength);
+  direction[0] += up[0] * .7;
+  direction[1] += up[1] * .7;
+  direction[2] += up[2] * .7;
+  const length = Math.hypot(...direction) || 1;
+  return direction.map(value => value / length);
 }
 function addChunkObject(chunk, positions, colors) {
   const geometry = new THREE.BufferGeometry();
@@ -457,14 +527,20 @@ function applyOrbit() {
   if (!camera || !cameraController.target) return;
   const sinPolar = Math.sin(cameraController.polar);
   const direction = new THREE.Vector3(
-    sinPolar * Math.cos(cameraController.azimuth),
-    Math.cos(cameraController.polar),
     sinPolar * Math.sin(cameraController.azimuth),
+    -Math.cos(cameraController.polar),
+    sinPolar * Math.cos(cameraController.azimuth),
   ).multiplyScalar(cameraController.radius);
   camera.position.copy(cameraController.target).add(direction);
   camera.up.set(0, -1, 0);
   camera.lookAt(cameraController.target);
   camera.updateMatrixWorld();
+}
+function syncOrbitFromCamera(target) {
+  const offset = camera.position.clone().sub(target);
+  cameraController.radius = Math.max(offset.length(), 1e-4);
+  cameraController.polar = Math.acos(Math.min(1, Math.max(-1, -offset.y / cameraController.radius)));
+  cameraController.azimuth = Math.atan2(offset.x, offset.z);
 }
 function applyDriveCamera(progress) {
   if (!camera || !state.trajectory) return false;
@@ -472,10 +548,15 @@ function applyDriveCamera(progress) {
   if (!sample) return false;
   const lift = Number(elements.cameraHeight.value);
   const backoff = Math.max(0, Number(elements.cameraBackoff.value));
-  const cameraCenter = sample.position.clone().addScaledVector(camera.up, lift);
-  camera.position.copy(cameraCenter).addScaledVector(sample.forward, -backoff);
-  camera.up.set(0, -1, 0);
-  camera.lookAt(cameraCenter.clone().addScaledVector(sample.forward, Math.max(state.sceneRadius * .05, .01)));
+  const worldUp = new THREE.Vector3(0, -1, 0);
+  const forward = sample.forward.clone().normalize();
+  const cameraCenter = sample.position.clone().addScaledVector(worldUp, lift);
+  camera.position.copy(cameraCenter).addScaledVector(forward, -backoff);
+  let lookForward = forward.clone().applyAxisAngle(worldUp, state.driveYaw).normalize();
+  const lookRight = new THREE.Vector3().crossVectors(lookForward, worldUp).normalize();
+  lookForward.applyAxisAngle(lookRight, state.drivePitch).normalize();
+  camera.up.copy(worldUp);
+  camera.lookAt(camera.position.clone().addScaledVector(lookForward, Math.max(state.sceneRadius * .05, .01)));
   camera.updateMatrixWorld();
   updateTrajectoryMarker(progress);
   return true;
@@ -492,7 +573,7 @@ function setMode(mode) {
   elements.orbitButton.setAttribute('aria-pressed', String(mode === 'orbit'));
   elements.driveButton.setAttribute('aria-pressed', String(mode === 'drive'));
   elements.playPauseButton.disabled = mode !== 'drive';
-  cameraController.enabled = mode === 'orbit';
+  cameraController.enabled = true;
   if (mode === 'orbit') {
     setPlaying(false);
     applyOrbit();
@@ -533,10 +614,14 @@ function frameScene() {
   camera.far = distance + radius * 25;
   camera.updateProjectionMatrix();
   cameraController.target.copy(center);
-  cameraController.radius = distance;
-  cameraController.azimuth = .72;
-  cameraController.polar = 1.24;
-  applyOrbit();
+  const viewDirection = new THREE.Vector3().fromArray(
+    trajectoryViewDirection(state.trajectory?.positions || []),
+  );
+  camera.position.copy(center).addScaledVector(viewDirection, distance);
+  camera.up.set(0, -1, 0);
+  camera.lookAt(center);
+  syncOrbitFromCamera(center);
+  camera.updateMatrixWorld();
 }
 function disposeObject(object) {
   object.traverse(child => {
@@ -558,6 +643,9 @@ function clearScene() {
   state.currentChunkFile = null;
   state.loadedPointCount = 0;
   state.loadedChunkCount = 0;
+  state.sourceFps = 30;
+  state.driveYaw = 0;
+  state.drivePitch = 0;
 }
 function validateManifest(manifest, manifestUrl) {
   if (!manifest || typeof manifest !== 'object') throw new Error('Manifest payload must be a JSON object.');
@@ -600,6 +688,9 @@ async function loadScene() {
     state.mode = 'orbit';
     state.playing = false;
     state.progress = 0;
+    state.sourceFps = 30;
+    state.driveYaw = 0;
+    state.drivePitch = 0;
     elements.playbackProgress.value = '0';
     elements.playbackProgressValue.textContent = '0%';
     elements.playPauseButton.textContent = 'Play';
@@ -622,6 +713,13 @@ async function loadScene() {
         state.trajectory = null;
       } else {
         state.trajectory = buildTrajectory(trajectoryPayload);
+        const payloadFps = Number(trajectoryPayload.fps);
+        const catalogFps = Number(elements.trajectoryInput.dataset.fps);
+        state.sourceFps = Number.isFinite(payloadFps) && payloadFps > 0
+          ? payloadFps
+          : Number.isFinite(catalogFps) && catalogFps > 0
+            ? catalogFps
+            : 30;
         state.resampledTrajectory = resampleTrajectory(state.trajectory, 1024);
         state.pathDistances = [0];
         for (let index = 1; index < state.resampledTrajectory.length; index += 1) {
@@ -632,6 +730,7 @@ async function loadScene() {
         state.totalPathLength = state.pathDistances[state.pathDistances.length - 1];
       }
     }
+    updatePlaybackControls();
     frameScene();
     state.trajectoryObjects = buildTrajectoryObjects();
     if (state.trajectory) {
@@ -652,7 +751,17 @@ function render(timestamp) {
   const deltaSeconds = state.lastTimestamp === null ? 0 : Math.min((timestamp - state.lastTimestamp) / 1000, .1);
   state.lastTimestamp = timestamp;
   if (state.playing && state.mode === 'drive' && state.trajectory) {
-    state.progress = (state.progress + deltaSeconds * Number(elements.playbackSpeed.value)) % 1;
+    state.progress = advancePlaybackProgress(
+      state.progress,
+      deltaSeconds,
+      Number(elements.playbackSpeed.value),
+      state.sourceFps,
+      state.trajectory.positions.length,
+    );
+    if (state.progress >= 1) {
+      state.progress = 0;
+      setPlaying(false);
+    }
     elements.playbackProgress.value = String(state.progress);
     elements.playbackProgressValue.textContent = `${Math.round(state.progress * 100)}%`;
     applyDriveCamera(state.progress);
@@ -661,7 +770,8 @@ function render(timestamp) {
   requestAnimationFrame(render);
 }
 function updatePlaybackControls() {
-  elements.playbackSpeedValue.textContent = `${Number(elements.playbackSpeed.value).toFixed(2)}×`;
+  const speed = Number(elements.playbackSpeed.value);
+  elements.playbackSpeedValue.textContent = `${speed.toFixed(2)}× · ${(speed * state.sourceFps).toFixed(1)} f/s`;
   elements.cameraHeightValue.textContent = `${Number(elements.cameraHeight.value).toFixed(2)} m`;
   elements.cameraBackoffValue.textContent = `${Number(elements.cameraBackoff.value).toFixed(2)} m`;
 }
@@ -676,6 +786,9 @@ async function loadCatalog() {
       option.textContent = entry.name;
       option.dataset.manifest = entry.manifest;
       option.dataset.trajectory = typeof entry.trajectory === 'string' ? entry.trajectory : '';
+      option.dataset.fps = Number.isFinite(Number(entry.fps)) && Number(entry.fps) > 0
+        ? String(Number(entry.fps))
+        : '';
       elements.dataset.insertBefore(option, elements.dataset.querySelector('option[value="custom"]'));
     }
   } catch (error) {
@@ -695,11 +808,12 @@ function applyDatasetSelection() {
   }
   elements.manifestInput.value = selected.dataset.manifest || '';
   elements.trajectoryInput.value = selected.dataset.trajectory || '';
+  elements.trajectoryInput.dataset.fps = selected.dataset.fps || '';
   syncTrajectoryInputExplicitEmpty();
 }
 function setPlaying(playing) {
   state.playing = playing;
-  elements.playPauseButton.textContent = playing ? 'Pause' : 'Play';
+  elements.playPauseButton.textContent = playing ? '暂停' : '播放';
 }
 function updateProgressFromControl() {
   const progress = Math.min(1, Math.max(0, Number(elements.playbackProgress.value)));
@@ -728,6 +842,8 @@ function wireControls() {
   elements.resetButton.addEventListener('click', () => {
     setPlaying(false);
     state.progress = 0;
+    state.driveYaw = 0;
+    state.drivePitch = 0;
     elements.playbackProgress.value = '0';
     elements.playbackProgressValue.textContent = '0%';
     setMode('orbit');
@@ -741,12 +857,16 @@ function wireControls() {
     if (trajectoryGroup) trajectoryGroup.visible = elements.trajectoryVisible.checked;
   });
   elements.pointSize.addEventListener('input', updatePointSize);
+  elements.viewFov.addEventListener('input', updateFov);
+  elements.skyBackground.addEventListener('change', updateBackground);
   elements.playbackSpeed.addEventListener('input', updatePlaybackControls);
   elements.playbackProgress.addEventListener('input', updateProgressFromControl);
   const updateDriveCamera = () => { if (state.mode === 'drive') applyDriveCamera(state.progress); };
   elements.cameraHeight.addEventListener('input', () => { updatePlaybackControls(); updateDriveCamera(); });
   elements.cameraBackoff.addEventListener('input', () => { updatePlaybackControls(); updateDriveCamera(); });
   updatePointSize();
+  updateFov();
+  updateBackground();
   updatePlaybackControls();
 }
 function applyQueryParameters() {

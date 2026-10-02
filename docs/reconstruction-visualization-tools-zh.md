@@ -59,7 +59,8 @@ python scripts\view_reconstruction.py `
   --poses outputs\demo_loop\camera_poses.npy `
   --output-dir outputs\demo_loop\point_cloud_chunks `
   --chunk-size 250000 `
-  --max-points 0
+  --max-points 0 `
+  --fps 30
 ```
 
 然后启动仓库根目录的本地服务：
@@ -74,7 +75,16 @@ python scripts\view_reconstruction.py `
 http://127.0.0.1:8765/tools/point_cloud_viewer.html
 ```
 
-操作方式与 Open3D 一致：左键拖动旋转，右键或 Shift+左键平移，滚轮缩放。请在页面中选择 `demo_loop · full RGB`，然后点击 `Load selected dataset` 开始加载；有轨迹时可用 Drive 模式沿相机路径播放、拖动进度条跳转，Reset 恢复自动取景。
+页面内也提供“使用说明”。请在页面中选择 `demo_loop · full RGB`，然后点击
+`Load selected dataset` 开始加载。
+
+- 交互查看：左键拖拽旋转，右键或 Shift+左键拖拽平移，滚轮缩放；
+- 行车播放：左键拖拽改变相机朝向，右键或 Shift+左键拖拽平移，滚轮调整 FOV；
+- 播放倍率 `1×` 按 `--fps` 记录的有效源帧率实时播放；界面同时显示等价的 `f/s`；
+- 进度条可跳转，`Reset` / `重置视角` 恢复自动取景。
+
+`--fps` 应填写原始视频 FPS 除以抽帧间隔后的有效帧率。例如 30 FPS 视频每 5 帧
+取 1 帧时填写 `6`。不填写时查看器按 30 FPS 回退显示。
 
 编码与性能权衡：
 
@@ -82,6 +92,7 @@ http://127.0.0.1:8765/tools/point_cloud_viewer.html
 - 伪高斯查看器只渲染合成的表面预览，不代表原始重建点；
 - 默认 `uint16` 编码每条记录 10 字节，体积更小，通常视觉上与原坐标一致；
 - `--position-encoding float32` 每条记录 16 字节，精确保留源 PLY 坐标；
+- `--fps` 控制网页播放的真实倍率；缺失时按 30 FPS 回退；
 - `--max-points` 可生成更轻量的目录，适合快速预览；
 - 不传 `--poses` 时没有轨迹，仅支持轨道查看。
 

@@ -230,6 +230,25 @@ def test_build_trajectory_returns_centers_and_normalized_optical_forwards():
     assert result["positions"] == [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]
     assert result["forwards"] == [[0.0, 1.0, 0.0], [0.0, 1.0, 0.0]]
 
+
+def test_build_trajectory_records_source_fps_and_frame_count():
+    poses = np.repeat(np.eye(4, dtype=np.float64)[None, :, :], 3, axis=0)
+    poses[:, :3, 3] = [[0, 0, 0], [1, 0, 0], [2, 0, 0]]
+
+    result = build_trajectory(poses, fps=29.97)
+
+    assert result["fps"] == pytest.approx(29.97)
+    assert result["frame_count"] == 3
+
+
+def test_build_trajectory_omits_invalid_fps():
+    poses = np.repeat(np.eye(4, dtype=np.float64)[None, :, :], 2, axis=0)
+
+    result = build_trajectory(poses, fps=0)
+
+    assert "fps" not in result
+
+
 import json
 
 from scripts.export_point_cloud_chunks import (
@@ -379,6 +398,19 @@ def test_parse_args_uses_full_resolution_defaults(tmp_path):
     assert args.max_points == 0
     assert args.position_encoding == "uint16"
     assert args.poses is None
+    assert args.fps is None
+
+
+def test_parse_args_accepts_source_fps(tmp_path):
+    args = parse_args(
+        [
+            "--input", str(tmp_path / "in.ply"),
+            "--output-dir", str(tmp_path / "out"),
+            "--fps", "29.97",
+        ]
+    )
+
+    assert args.fps == pytest.approx(29.97)
 
 
 def test_main_writes_compact_chunks_and_reports_result(tmp_path, capsys):

@@ -235,7 +235,7 @@ def load_camera_poses(path: Path) -> np.ndarray:
     return poses
 
 
-def build_trajectory(poses: np.ndarray) -> dict[str, Any]:
+def build_trajectory(poses: np.ndarray, fps: float | None = None) -> dict[str, Any]:
     """Convert camera centers and optical axes to a JSON-safe trajectory."""
     poses = np.asarray(poses)
     if poses.ndim != 3 or poses.shape[1:] != (4, 4):
@@ -251,13 +251,17 @@ def build_trajectory(poses: np.ndarray) -> dict[str, Any]:
         & (lengths > 0)
     )
 
-    return {
+    trajectory = {
         "format": "abot-point-cloud-trajectory",
         "version": 1,
         "coordinate_system": "original ABot-Recon world coordinates",
+        "frame_count": int(valid.sum()),
         "positions": centers[valid].astype(float, copy=False).tolist(),
         "forwards": (forwards[valid] / lengths[valid, None]).tolist(),
     }
+    if fps is not None and np.isfinite(fps) and fps > 0:
+        trajectory["fps"] = float(fps)
+    return trajectory
 
 
 def point_budget_indices(point_count: int, max_points: int) -> np.ndarray:
@@ -300,6 +304,7 @@ def export_point_cloud_chunks(
     chunk_size: int = 250_000,
     max_points: int = 0,
     position_encoding: str = "uint16",
+    fps: float | None = None,
 ) -> dict[str, Any]:
     """Convert a finite RGB PLY into compact chunks and a viewing manifest."""
     if chunk_size <= 0:
@@ -317,7 +322,7 @@ def export_point_cloud_chunks(
 
     trajectory = None
     if poses_path is not None:
-        trajectory = build_trajectory(load_camera_poses(Path(poses_path)))
+        trajectory = build_trajectory(load_camera_poses(Path(poses_path)), fps=fps)
         if not trajectory["positions"]:
             trajectory = None
 
@@ -388,6 +393,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True, type=Path, help="input binary RGB PLY")
     parser.add_argument("--poses", type=Path, help="optional [N,4,4] camera poses")
+    parser.add_argument("--fps", type=float, help="source frames per second for real-time playback")
     parser.add_argument("--output-dir", required=True, type=Path, help="output directory")
     parser.add_argument("--chunk-size", type=int, default=250_000, help="points per chunk")
     parser.add_argument(
@@ -412,6 +418,7 @@ def main(argv: list[str] | None = None) -> None:
         chunk_size=args.chunk_size,
         max_points=args.max_points,
         position_encoding=args.position_encoding,
+        fps=args.fps,
     )
     compact_mb = manifest["point_count"] * manifest["stride"] / 1_000_000
     trajectory_written = "yes" if "trajectory" in manifest else "no"
